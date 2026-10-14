@@ -76,6 +76,7 @@ export async function PATCH(request) {
       }
     }
 
+    const previousSettings = await getSettings();
     const settings = await updateSettings(body);
 
     // Apply outbound proxy settings immediately (no restart required)
@@ -87,13 +88,18 @@ export async function PATCH(request) {
       applyOutboundProxyEnv(settings);
     }
 
-    // Invalidate combo rotation state when strategy settings change
-    if (
-      Object.prototype.hasOwnProperty.call(body, "comboStrategy") ||
-      Object.prototype.hasOwnProperty.call(body, "comboStickyRoundRobinLimit") ||
-      Object.prototype.hasOwnProperty.call(body, "comboStrategies")
-    ) {
+    // A save for another combo must not restart an active grading sequence.
+    if (previousSettings.comboStrategy !== settings.comboStrategy) {
       resetComboRotation();
+    } else {
+      if (previousSettings.comboStickyRoundRobinLimit !== settings.comboStickyRoundRobinLimit) {
+        resetComboRotation(undefined, { grading: false });
+      }
+      const before = previousSettings.comboStrategies || {};
+      const after = settings.comboStrategies || {};
+      for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) {
+        if (before[name]?.fallbackStrategy !== after[name]?.fallbackStrategy) resetComboRotation(name);
+      }
     }
 
     if (

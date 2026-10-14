@@ -183,6 +183,14 @@ export async function GET(request, { params }) {
       }
     }
 
+    // Populate in-memory quotaStore snapshot whenever usage is fetched
+    if (usage?.quotas) {
+      try {
+        const { setQuotaSnapshot } = await import("@/sse/services/quotaStore.js");
+        setQuotaSnapshot(connectionId, connection.provider, usage.quotas);
+      } catch { /* best-effort sync */ }
+    }
+
     return Response.json(usage);
   } catch (error) {
     const provider = connection?.provider ?? "unknown";

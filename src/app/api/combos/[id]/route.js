@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getComboById, updateCombo, deleteCombo, getComboByName } from "@/lib/localDb";
+import { getComboById, updateCombo, deleteCombo, getComboByName, getSettings, updateSettings } from "@/lib/localDb";
 import { resetComboRotation } from "open-sse/services/combo.js";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
@@ -49,6 +49,15 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: "Combo not found" }, { status: 404 });
     }
 
+    if (prev?.name && combo.name !== prev.name) {
+      const settings = await getSettings();
+      const strategies = { ...(settings.comboStrategies || {}) };
+      if (strategies[prev.name]) strategies[combo.name] = strategies[prev.name];
+      else delete strategies[combo.name];
+      delete strategies[prev.name];
+      await updateSettings({ comboStrategies: strategies });
+    }
+
     // Invalidate rotation state (models/strategy/name may have changed)
     if (prev?.name) resetComboRotation(prev.name);
     if (combo.name && combo.name !== prev?.name) resetComboRotation(combo.name);
@@ -71,8 +80,14 @@ export async function DELETE(request, { params }) {
       return NextResponse.json({ error: "Combo not found" }, { status: 404 });
     }
 
-    if (prev?.name) resetComboRotation(prev.name);
-    
+    if (prev?.name) {
+      resetComboRotation(prev.name);
+      const settings = await getSettings();
+      const strategies = { ...(settings.comboStrategies || {}) };
+      delete strategies[prev.name];
+      await updateSettings({ comboStrategies: strategies });
+    }
+
     return NextResponse.json({ success: true });
   } catch (error) {
     console.log("Error deleting combo:", error);

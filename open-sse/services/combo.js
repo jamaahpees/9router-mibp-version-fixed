@@ -6,6 +6,7 @@ import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
+import { TRANSIENT_COOLDOWN_MS } from "../config/errorConfig.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -86,6 +87,123 @@ export function reorderByCapabilities(models, required) {
  * @type {Map<string, { index: number, consecutiveUseCount: number }>}
  */
 const comboRotationState = new Map();
+const comboGradingState = new Map();
+
+// A grading cursor only moves forward within a cycle. State identity guards
+// in-flight requests against resets; cycle guards prevent stale completions.
+async function handleGradingChat({ body, models, handleSingleModel, log, comboName, signal, checkModelAvailability }) {
+  const key = comboName || "__default__";
+  const signature = JSON.stringify(models);
+  let state = comboGradingState.get(key);
+  if (!state || state.signature !== signature) {
+    state = { signature, index: 0, cycle: 0, cooldowns: new Map() };
+    comboGradingState.set(key, state);
+  }
+  const now = Date.now();
+  if (state.index >= models.length && [...state.cooldowns.values()].some(t => t <= now)) {
+    state.index = 0;
+    state.cycle++;
+  }
+  const cycle = state.cycle;
+  const isCurrent = () => comboGradingState.get(key) === state && state.cycle === cycle;
+  // Grade monitor: rewind the cursor when a lower grade recovered at the
+  // account level. checkModelAvailability is a read-only snapshot (no network,
+  // no quota refresh). The cycle is kept; only the cursor moves back to the
+  // lowest recovered grade. Model-level cooldowns are honored first.
+  if (state.index > 0 && state.index < models.length && typeof checkModelAvailability === 'function') {
+    for (let r = 0; r < state.index; r++) {
+      if (signal && signal.aborted) throw new DOMException('Request aborted', 'AbortError');
+      if (!isCurrent()) return unavailableResponse(503, 'Combo routing changed; retry request', new Date(Date.now() + 1000).toISOString(), 'retry after 1s');
+      if ((state.cooldowns.get(r) || 0) > Date.now()) continue;
+      let avail = null;
+      try {
+        avail = await checkModelAvailability(models[r]);
+      } catch {
+        avail = null;
+      }
+      if (signal && signal.aborted) throw new DOMException('Request aborted', 'AbortError');
+      if (!isCurrent()) return unavailableResponse(503, 'Combo routing changed; retry request', new Date(Date.now() + 1000).toISOString(), 'retry after 1s');
+      if (avail && avail.availableCount > 0) {
+        if (log && log.info) log.info('COMBO', 'Grade monitor: grade ' + (r + 1) + '/' + models.length + ' recovered (' + models[r] + '), rewinding cursor');
+        state.index = r;
+        break;
+      }
+      let retryMs = Date.now() + TRANSIENT_COOLDOWN_MS;
+      if (avail && avail.retryAfter) {
+        const parsed = Date.parse(avail.retryAfter);
+        if (Number.isFinite(parsed) && parsed > Date.now()) retryMs = parsed;
+      }
+      state.cooldowns.set(r, Math.max(state.cooldowns.get(r) || 0, retryMs));
+    }
+  }
+  let lastError = "All combo models unavailable";
+
+  for (let i = state.index; i < models.length; i++) {
+    if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+    if (!isCurrent()) return unavailableResponse(503, "Combo routing changed; retry request", new Date(Date.now() + 1000).toISOString(), "retry after 1s");
+    // Another request may already have advanced past this candidate.
+    if (i < state.index || (state.cooldowns.get(i) || 0) > Date.now()) continue;
+    state.index = Math.max(state.index, i);
+    const model = models[i];
+    // Skip wholly unavailable candidates. The app's single-model handler still
+    // exhausts its available accounts before returning a fallback-worthy failure.
+    const stillHasAccounts = checkModelAvailability ? await checkModelAvailability(model) : { availableCount: 1 };
+    // Recheck generation/abort/index after awaited checker (another request may have advanced state)
+    if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+    if (!isCurrent()) return unavailableResponse(503, "Combo routing changed; retry request", new Date(Date.now() + 1000).toISOString(), "retry after 1s");
+    if (i < state.index || (state.cooldowns.get(i) || 0) > Date.now()) continue;
+    state.index = Math.max(state.index, i);
+    if (!stillHasAccounts || stillHasAccounts.availableCount === 0) {
+      const logFn = log?.debug || log?.info;
+      logFn?.call(log, "GRADING", `Model ${model} has no available accounts, advancing cursor`);
+      const retryMs = (stillHasAccounts?.retryAfter && Date.parse(stillHasAccounts.retryAfter)) || (Date.now() + TRANSIENT_COOLDOWN_MS);
+      state.cooldowns.set(i, Math.max(state.cooldowns.get(i) || 0, retryMs));
+      state.index = Math.max(state.index, i + 1);
+      continue;
+    }
+
+    let result;
+    let errorText;
+    let retryAt = null;
+    let status = 503;
+    try {
+      log.info("COMBO", `Fallback Grading: trying ${i + 1}/${models.length}: ${model}`);
+      result = await handleSingleModel(body, model);
+      if (result.ok) return result;
+      status = result.status;
+      errorText = result.statusText || String(status);
+      try {
+        const data = await result.clone().json();
+        errorText = data?.error?.message || data?.error || data?.message || errorText;
+        const parsed = Date.parse(data?.retryAfter);
+        if (Number.isFinite(parsed) && parsed > Date.now()) retryAt = parsed;
+      } catch { /* Non-JSON upstream error. */ }
+      const header = result.headers.get("retry-after");
+      if (header) {
+        const parsed = /^\d+(\.\d+)?$/.test(header.trim())
+          ? Date.now() + Number(header) * 1000 : Date.parse(header);
+        if (Number.isFinite(parsed) && parsed > Date.now()) retryAt = Math.max(retryAt || 0, parsed);
+      }
+    } catch (error) {
+      if (error?.name === "AbortError" || error?.localTermination) throw error;
+      errorText = error?.message || String(error);
+    }
+    if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+    if (typeof errorText !== "string") errorText = JSON.stringify(errorText);
+    const { shouldFallback, cooldownMs } = checkFallbackError(status, errorText);
+    if (!shouldFallback && result) return result;
+    lastError = errorText;
+    if (isCurrent()) {
+      state.cooldowns.set(i, Math.max(state.cooldowns.get(i) || 0, retryAt || Date.now() + cooldownMs));
+      state.index = Math.max(state.index, i + 1);
+    }
+  }
+  // The exhausted cursor stays exhausted until at least one cooldown expires.
+  if (isCurrent()) state.index = models.length;
+  const retryTimes = [...state.cooldowns.values()].filter(t => t > Date.now());
+  const retryAfter = new Date(retryTimes.length ? Math.min(...retryTimes) : Date.now() + 1000).toISOString();
+  return unavailableResponse(503, lastError, retryAfter, retryAfter ? formatRetryAfter(retryAfter) : "");
+}
 
 // Trailing run of items after the last assistant/model turn = the current user
 // turn. It may span several messages (e.g. text + image split across blocks),
@@ -240,9 +358,14 @@ export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
  * Reset in-memory rotation state when combo/settings change
  * @param {string} [comboName] - Combo name to reset; omit to clear all
  */
-export function resetComboRotation(comboName) {
-  if (comboName) comboRotationState.delete(comboName);
-  else comboRotationState.clear();
+export function resetComboRotation(comboName, { grading = true } = {}) {
+  if (comboName) {
+    comboRotationState.delete(comboName);
+    if (grading) comboGradingState.delete(comboName);
+  } else {
+    comboRotationState.clear();
+    if (grading) comboGradingState.clear();
+  }
 }
 
 /**
@@ -277,7 +400,10 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, signal, checkModelAvailability }) {
+  if (comboStrategy === "fallback-grading") {
+    return handleGradingChat({ body, models, handleSingleModel, log, comboName, signal, checkModelAvailability });
+  }
   // Apply rotation strategy if enabled
   let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
 
@@ -353,6 +479,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       if (!lastStatus) lastStatus = result.status;
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError" || error?.localTermination) throw error;
       // Catch unexpected exceptions to ensure fallback continues
       lastError = error.message || String(error);
       if (!lastStatus) lastStatus = 500;

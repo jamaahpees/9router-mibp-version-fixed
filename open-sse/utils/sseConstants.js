@@ -14,10 +14,11 @@ export const SSE_HEADERS_NO_BUFFER = {
   "X-Accel-Buffering": "no"
 };
 
-// Variant for client-facing SSE responses (adds permissive CORS)
+// Variant for client-facing SSE responses (adds permissive CORS and disables transform/buffering)
 export const SSE_HEADERS_CORS = {
-  "Content-Type": "text/event-stream",
-  "Cache-Control": "no-cache",
+  "Content-Type": "text/event-stream; charset=utf-8",
+  "Cache-Control": "no-cache, no-transform",
   "Connection": "keep-alive",
+  "X-Accel-Buffering": "no",
   "Access-Control-Allow-Origin": "*"
 };

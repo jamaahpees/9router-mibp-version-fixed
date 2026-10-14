@@ -9,6 +9,7 @@ import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
+import { localTerminationResult } from "../utils/requestBudget.js";
 import { HTTP_STATUS, TOKEN_SAVER_HEADER } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
 import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
@@ -64,7 +65,13 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, resolveProxyConfig }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, resolveProxyConfig, requestContext }) {
+  const wait = (work) => requestContext?.wait ? requestContext.wait(work) : Promise.resolve(work);
+  const checkRequest = () => {
+    requestContext?.check?.();
+    if (requestContext?.signal?.aborted) throw requestContext.signal.reason || new DOMException("Request aborted", "AbortError");
+  };
+  checkRequest();
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -168,7 +175,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     // Convert remote image URLs to base64 for targets that can't fetch URLs.
     try {
-      const n = await prefetchRemoteImages(body, sourceFormat, targetFormat, { signal: undefined });
+      checkRequest();
+      const n = await wait(prefetchRemoteImages(body, sourceFormat, targetFormat, { signal: requestContext?.signal }));
       if (n > 0) log?.debug?.("MODALITY", `prefetched ${n} remote image(s) for ${targetFormat}`);
     } catch (e) { log?.warn?.("MODALITY", `image prefetch failed: ${e.message}`); }
   }
@@ -196,7 +204,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   } else {
     translatedBody = translateRequest(sourceFormat, targetFormat, upstreamModel, body, stream, credentials, provider, reqLogger, stripList, connectionId, clientTool);
     if (!translatedBody) {
-      trackPendingRequest(model, provider, connectionId, false, true);
+      requestContext?.finishAttempt?.("error");
       return createErrorResult(HTTP_STATUS.BAD_REQUEST, `Failed to translate request for ${sourceFormat} → ${targetFormat}`);
     }
     toolNameMap = translatedBody._toolNameMap;
@@ -263,7 +271,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Headroom: optional external proxy compression; fail open if proxy is absent.
   const headroomDiagnostics = {};
-  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, timeoutMs: headroomTimeoutMs, diagnostics: headroomDiagnostics });
+  checkRequest();
+  const headroomStats = await wait(compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, timeoutMs: headroomTimeoutMs, diagnostics: headroomDiagnostics }));
   const headroomLine = formatHeadroomLog(headroomStats);
   const headroomSizeLine = formatHeadroomSizeLog(headroomDiagnostics);
   if (headroomLine) {
@@ -291,10 +300,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // PXPIPE: image bulky context (Claude-format bodies only), last saver before dispatch
   let pxpipeSummary = null;
   if (pxpipeEnabled) {
-    const pxpipeResult = await compressWithPxpipe(translatedBody, {
+    checkRequest();
+    const pxpipeResult = await wait(compressWithPxpipe(translatedBody, {
       enabled: true, format: finalFormat, model: upstreamModel,
       minChars: pxpipeMinChars, timeoutMs: pxpipeTimeoutMs, transform: pxpipeTransform,
-    });
+    }));
     pxpipeSummary = pxpipeResult.summary;
     if (pxpipeResult.body) translatedBody = pxpipeResult.body;
     if (pxpipeSummary?.applied) xf.push(`PXPIPE:${pxpipeSummary.imageCount}img`);
@@ -308,7 +318,18 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (passthrough && clientTool === "claude") anchorClaudeCache(translatedBody);
 
   const executor = getExecutor(provider);
-  trackPendingRequest(model, provider, connectionId, true);
+  checkRequest();
+  const pendingId = requestContext?.pendingId || crypto.randomUUID();
+  trackPendingRequest(model, provider, connectionId, true, false, pendingId);
+  let pendingFinished = false;
+  let detachSignal = () => {};
+  const finishPending = (status = "completed") => {
+    if (pendingFinished) return;
+    pendingFinished = true;
+    detachSignal();
+    trackPendingRequest(model, provider, connectionId, false, status === "error", pendingId);
+    requestContext?.finishAttempt?.(status);
+  };
   appendRequestLog({ model, provider, connectionId, status: "PENDING" }).catch(() => { });
 
   const msgCount = translatedBody.messages?.length || translatedBody.input?.length || translatedBody.contents?.length || translatedBody.request?.contents?.length || 0;
@@ -316,12 +337,20 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   const streamController = createStreamController({
     onDisconnect: (reason) => {
-      trackPendingRequest(model, provider, connectionId, false);
+      finishPending("aborted");
       if (onDisconnect) onDisconnect(reason);
     },
-    onError: () => trackPendingRequest(model, provider, connectionId, false),
+    onError: (error) => finishPending(error?.status === 504 || error?.name === "TimeoutError" ? "timeout" : error?.name === "AbortError" ? "aborted" : "error"),
     log, provider, model, reqTag
   });
+  const abortOwned = () => {
+    streamController.abort?.();
+    finishPending(requestContext?.signal?.reason?.name === "TimeoutError" ? "timeout" : "aborted");
+  };
+  requestContext?.signal?.addEventListener("abort", abortOwned, { once: true });
+  detachSignal = () => requestContext?.signal?.removeEventListener("abort", abortOwned);
+  if (requestContext?.signal?.aborted) abortOwned();
+  const responseContext = { ...requestContext, finishAttempt: finishPending };
 
   // Build proxy options from the resolved provider-specific data. `strictProxy`
   // is forced for freebuff so a dead/limited pool can never leak the request
@@ -342,7 +371,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     const error = new Error(`Freebuff has no healthy proxy pool for ${model}; all assigned pools are cooling down after limited-IP errors.`);
     error.status = 503;
     error.poolScoped = { poolId: null, scope: proxyScope, reason: "no_fit_pool" };
-    trackPendingRequest(model, provider, connectionId, false, true);
+    finishPending("error");
     return createErrorResult(503, error.message);
   }
 
@@ -354,7 +383,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   ) {
     const error = new Error(`Freebuff requires a configured proxy pool for ${model}; direct egress is disabled to prevent limited-IP rate limits.`);
     error.status = 503;
-    trackPendingRequest(model, provider, connectionId, false, true);
+    finishPending("error");
     return createErrorResult(503, error.message);
   }
 
@@ -413,11 +442,17 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return false;
   };
 
+  let executionIndex = 0;
   const executeWithPoolFallback = async (attempt = 0) => {
     let result;
     try {
-      result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+      checkRequest();
+      requestContext?.onMilestone?.(`upstream_dispatch_${++executionIndex}`);
+      requestContext?.onPhase?.("upstream_headers_wait");
+      result = await wait(executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions }));
+      requestContext?.onMilestone?.("upstream_headers");
     } catch (error) {
+      checkRequest();
       if (error?.poolScoped && typeof resolveProxyConfig === "function" && attempt < MAX_POOL_RETRIES) {
         if (await tryNextPool(error.poolScoped, error.message)) return executeWithPoolFallback(attempt + 1);
       }
@@ -426,7 +461,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     // Non-ok response that the executor declared pool/IP-scoped (e.g. opencode
     // free per-IP limit) — parse once, retry via another pool when possible.
     if (!result.response.ok) {
-      const parsed = await parseUpstreamError(result.response, executor);
+      const parsed = await wait(parseUpstreamError(result.response, executor));
       if (parsed.poolScoped && typeof resolveProxyConfig === "function" && attempt < MAX_POOL_RETRIES) {
         if (await tryNextPool(parsed.poolScoped, parsed.message)) return executeWithPoolFallback(attempt + 1);
       }
@@ -449,7 +484,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     providerResponseFormat = result.responseFormat || targetFormat;
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
-    trackPendingRequest(model, provider, connectionId, false, true);
+    finishPending("error");
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -462,9 +497,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       status: "error"
     })).catch(() => { });
 
-    if (error.name === "AbortError") {
+    if (requestContext?.signal?.aborted || error.name === "AbortError" || error.name === "TimeoutError") {
+      streamController.abort?.();
       streamController.handleError(error);
-      return createErrorResult(499, "Request aborted");
+      return localTerminationResult(requestContext?.signal?.reason || error);
     }
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     if (log?.errorLine) {
@@ -482,14 +518,16 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       // providers (xAI/grok-cli) issue a new RT on every refresh; without this,
       // refreshWithRetry's 2nd/3rd attempt reuses the already-consumed RT →
       // invalid_grant → auth_failed retryable=false.
-      const newCredentials = await refreshWithRetry(async () => {
+      checkRequest();
+      requestContext?.onPhase?.("preparing_credentials");
+      const newCredentials = await wait(refreshWithRetry(async () => {
         const result = await executor.refreshCredentials(credentials, log);
         if (result?.refreshToken && result.refreshToken !== credentials.refreshToken) {
           if (result.accessToken) credentials.accessToken = result.accessToken;
           credentials.refreshToken = result.refreshToken;
         }
         return result;
-      }, 3, log);
+      }, 3, log));
       if (newCredentials?.accessToken || newCredentials?.copilotToken) {
         if (log?.line) log.line(reqTag, "🔑", `TOKEN REFRESHED · ${provider}/${model}`);
         Object.assign(credentials, newCredentials);
@@ -497,7 +535,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
-          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+          checkRequest();
+          requestContext?.onMilestone?.(`upstream_dispatch_${++executionIndex}`);
+      requestContext?.onPhase?.("upstream_headers_wait");
+          const retryResult = await wait(executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions }));
+          requestContext?.onMilestone?.("upstream_headers");
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;
@@ -512,10 +554,27 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
   }
 
+  if (requestContext?.signal?.aborted) {
+    streamController.abort?.();
+    providerResponse.body?.cancel().catch(() => {});
+    finishPending(requestContext.signal.reason?.name === "TimeoutError" ? "timeout" : "aborted");
+    return localTerminationResult(requestContext.signal.reason);
+  }
+
   // Provider returned error
   if (!providerResponse.ok) {
-    trackPendingRequest(model, provider, connectionId, false, true);
-    const { statusCode, message, resetsAtMs } = parsedNonOk || await parseUpstreamError(providerResponse, executor);
+    let parsedError;
+    try {
+      parsedError = parsedNonOk || await wait(parseUpstreamError(providerResponse, executor));
+    } catch (error) {
+      streamController.abort?.();
+      providerResponse.body?.cancel().catch(() => {});
+      finishPending(requestContext?.signal?.reason?.name === "TimeoutError" ? "timeout" : "aborted");
+      if (requestContext?.signal?.aborted) return localTerminationResult(requestContext.signal.reason);
+      return createErrorResult(502, "Failed to read upstream error response");
+    }
+    finishPending("error");
+    const { statusCode, message, resetsAtMs } = parsedError;
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -537,26 +596,37 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
+  try {
+    const sharedCtx = { requestContext: responseContext, pendingId, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
-  const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
+  // Handlers may call this before consuming the body; core owns final completion.
+  const trackDone = () => {};
 
   // Provider forced streaming but client wants JSON
   if (!clientRequestedStreaming && providerRequiresStreaming) {
     const result = await handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, trackDone, appendLog });
-    if (result) { streamController.handleComplete(); return result; }
+    if (result) { finishPending(result.success ? "completed" : "error"); streamController.handleComplete(); return result; }
   }
 
   // True non-streaming response
   if (!stream) {
     const result = await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, trackDone, appendLog });
+    finishPending(result.success ? "completed" : "error");
     streamController.handleComplete();
     return result;
   }
 
   // Streaming response
   const { onStreamComplete, streamDetailId } = buildOnStreamComplete({ ...sharedCtx });
-  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId });
+  const result = await handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId });
+  return result;
+  } catch (error) {
+    streamController.abort?.();
+    providerResponse.body?.cancel().catch(() => {});
+    finishPending(requestContext?.signal?.reason?.name === "TimeoutError" ? "timeout" : requestContext?.signal?.aborted ? "aborted" : "error");
+    if (requestContext?.signal?.aborted || error?.localTermination) return localTerminationResult(requestContext?.signal?.reason || error);
+    return createErrorResult(502, "Failed to consume upstream response");
+  }
 }
 
 export function isTokenExpiringSoon(expiresAt, bufferMs = 5 * 60 * 1000) {

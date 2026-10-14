@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { configureRequestLifecycleNotifier, getRequestLifecycleSnapshot } from "../../requestLifecycle.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -9,7 +10,7 @@ function maskApiKey(key) {
   return key.slice(0, 8) + "***";
 }
 
-const PENDING_TIMEOUT_MS = 60 * 1000;
+// Pending requests are explicitly paired; long streams must never expire on a shared timer.
 const RING_CAP = 50;
 const CONN_CACHE_TTL_MS = 30 * 1000;
 const PERIOD_MS = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
@@ -21,14 +22,19 @@ if (!global._statsEmitter) {
   global._statsEmitter = new EventEmitter();
   global._statsEmitter.setMaxListeners(50);
 }
-if (!global._pendingTimers) global._pendingTimers = {};
+if (!global._pendingEntries) global._pendingEntries = new Map();
+// Clear old shared timers when a development reload loads this implementation.
+if (global._pendingTimers) {
+  for (const timer of Object.values(global._pendingTimers)) clearTimeout(timer);
+  delete global._pendingTimers;
+}
 if (!global._recentRing) global._recentRing = { items: [], initialized: false };
 if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
 if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update: null };
 
 const pendingRequests = global._pendingRequests;
 const lastErrorProvider = global._lastErrorProvider;
-const pendingTimers = global._pendingTimers;
+const pendingEntries = global._pendingEntries;
 const recentRing = global._recentRing;
 const connCache = global._connectionMapCache;
 const statsEmitTimers = global._statsEmitTimers;
@@ -149,9 +155,23 @@ async function calculateCost(provider, model, tokens) {
   }
 }
 
-export function trackPendingRequest(model, provider, connectionId, started, error = false) {
+configureRequestLifecycleNotifier(() => scheduleStatsEvent("pending"));
+
+export function trackPendingRequest(model, provider, connectionId, started, error = false, pendingId) {
+  // A unique ID makes duplicate starts/ends no-ops. ID-less modality callers
+  // retain their original balanced increment/decrement contract.
+  if (pendingId != null) {
+    if (started) {
+      if (pendingEntries.has(pendingId)) return;
+      pendingEntries.set(pendingId, { model, provider, connectionId });
+    } else {
+      const entry = pendingEntries.get(pendingId);
+      if (!entry) return;
+      ({ model, provider, connectionId } = entry);
+      pendingEntries.delete(pendingId);
+    }
+  }
   const modelKey = provider ? `${model} (${provider})` : model;
-  const timerKey = `${connectionId}|${modelKey}`;
 
   if (!pendingRequests.byModel[modelKey]) pendingRequests.byModel[modelKey] = 0;
   pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] + (started ? 1 : -1));
@@ -167,21 +187,6 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
         delete pendingRequests.byAccount[connectionId];
       }
     }
-  }
-
-  if (started) {
-    clearTimeout(pendingTimers[timerKey]);
-    pendingTimers[timerKey] = setTimeout(() => {
-      delete pendingTimers[timerKey];
-      if (pendingRequests.byModel[modelKey] > 0) pendingRequests.byModel[modelKey] = 0;
-      if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey] > 0) {
-        pendingRequests.byAccount[connectionId][modelKey] = 0;
-      }
-      scheduleStatsEvent("pending");
-    }, PENDING_TIMEOUT_MS);
-  } else {
-    clearTimeout(pendingTimers[timerKey]);
-    delete pendingTimers[timerKey];
   }
 
   if (!started && error && provider) {
@@ -235,7 +240,8 @@ export async function getActiveRequests() {
     .slice(0, 20);
 
   const errorProvider = (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "";
-  return { activeRequests, recentRequests, errorProvider };
+  return { activeRequests, recentRequests, errorProvider,
+    pending: structuredClone(pendingRequests), ...getRequestLifecycleSnapshot() };
 }
 
 export async function saveRequestUsage(entry) {
@@ -397,7 +403,8 @@ export async function getUsageStats(period = "all") {
     totalPromptTokens: 0, totalCompletionTokens: 0, totalCachedTokens: 0, totalCost: 0,
     byProvider: {}, byModel: {}, byAccount: {}, byApiKey: {}, byEndpoint: {},
     last10Minutes: [],
-    pending: pendingRequests,
+    pending: structuredClone(pendingRequests),
+    ...getRequestLifecycleSnapshot(),
     activeRequests: [],
     recentRequests,
     errorProvider: (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "",

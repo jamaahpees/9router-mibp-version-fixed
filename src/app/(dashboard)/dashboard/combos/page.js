@@ -172,15 +172,17 @@ export default function CombosPage() {
         updated[comboName] = next;
       }
 
-      await fetch("/api/settings", {
+      const response = await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ comboStrategies: updated }),
       });
+      if (!response.ok) throw new Error("Failed to update combo strategy");
 
       setComboStrategies(updated);
     } catch (error) {
       console.log("Error updating combo strategy:", error);
+      alert(error.message || "Failed to update combo strategy");
     }
   };
 
@@ -203,6 +205,7 @@ export default function CombosPage() {
           </p>
           <ul className="text-sm text-text-muted mt-2 flex flex-col gap-1">
             <li><span className="font-medium text-text-main">Fallback</span> — tries models in order (next on failure)</li>
+            <li><span className="font-medium text-text-main">Fallback Grading</span> — keeps using the current model until failure or limit, then advances in list order. Restarts after cooldown when all models are unavailable.</li>
             <li><span className="font-medium text-text-main">Round Robin</span> — rotates models across requests to spread load</li>
             <li><span className="font-medium text-text-main">Fusion</span> — queries all models in parallel, then a judge synthesizes one answer. Best quality, but costs the most: every request bills all panel models + the judge (N+1 calls)</li>
           </ul>
@@ -291,6 +294,7 @@ export default function CombosPage() {
 const STRATEGY_OPTIONS = [
   { value: "fallback", label: "Fallback — try in order" },
   { value: "round-robin", label: "Round Robin — rotate" },
+  { value: "fallback-grading", label: "Fallback Grading — stay until failure" },
   { value: "fusion", label: "Fusion — panel + judge" },
 ];
 

@@ -19,6 +19,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
   const abortController = new AbortController();
   const startTime = Date.now();
   let disconnected = false;
+  let abnormalTermination = false;
   let abortTimeout = null;
 
   // Only abnormal terminations are logged; normal completion is covered by "📊 done".
@@ -35,11 +36,13 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     startTime,
 
     isConnected: () => !disconnected,
+    isDisconnected: () => abnormalTermination,
 
     // Call when client disconnects
     handleDisconnect: (reason = "client_closed") => {
       if (disconnected) return;
       disconnected = true;
+      abnormalTermination = true;
 
       // Debug-only: Responses API has no [DONE] sentinel, so codex/droid close the
       // socket on every completed request. "📊 done" is the authoritative outcome line.
@@ -68,6 +71,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     handleError: (error) => {
       if (disconnected) return;
       disconnected = true;
+      abnormalTermination = true;
 
       if (abortTimeout) {
         clearTimeout(abortTimeout);
@@ -76,6 +80,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
 
       if (error.name === "AbortError") {
         logStream("⚡", "ABORTED");
+        onError?.(error);
         return;
       }
 

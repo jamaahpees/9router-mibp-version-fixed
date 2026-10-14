@@ -39,6 +39,36 @@ function TimeAgo({ timestamp }) {
   return <>{timeAgo(timestamp)}</>;
 }
 
+function LifecycleRequests({ requests = [], overflow }) {
+  const [clock, setClock] = useState(null);
+  const elapsed = clock?.requests === requests ? clock.elapsed : 0;
+  useEffect(() => {
+    const start = performance.now();
+    const timer = setInterval(() => setClock({ requests, elapsed: performance.now() - start }), 1000);
+    return () => clearInterval(timer);
+  }, [requests]);
+  if (!requests.length && !overflow?.overflowActive) return null;
+  return (
+    <Card padding="sm" className="min-w-0">
+      <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2">Active request phases</h3>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs text-left">
+          <thead><tr className="text-text-muted"><th className="p-2">Model / Provider</th><th className="p-2">Account</th><th className="p-2">Phase</th><th className="p-2 text-right">Age / Phase age</th></tr></thead>
+          <tbody>{requests.map((request) => (
+            <tr key={request.id} className="border-t border-border">
+              <td className="p-2 break-all">{request.model || "Selecting model"}<span className="block text-text-muted">{request.provider || "Selecting provider"}</span></td>
+              <td className="p-2">{request.account || "Not selected"}</td>
+              <td className="p-2">{request.phase.replaceAll("_", " ")}</td>
+              <td className="p-2 text-right whitespace-nowrap">{((request.elapsedMs + elapsed) / 1000).toFixed(1)}s / {((request.phaseElapsedMs + elapsed) / 1000).toFixed(1)}s</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+      {overflow?.overflowActive > 0 && <p className="p-2 text-xs text-text-muted">{overflow.overflowActive} additional active requests without retained detail. Requests continue normally.</p>}
+    </Card>
+  );
+}
+
 function RecentRequests({ requests = [] }) {
   return (
     <Card className="flex min-w-0 flex-col overflow-hidden" padding="sm" style={{ height: 480 }}>
@@ -292,6 +322,9 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
             recentRequests: data.recentRequests,
             errorProvider: data.errorProvider,
             pending: data.pending,
+            lifecycleRequests: data.lifecycleRequests || [],
+            recentLifecycleRequests: data.recentLifecycleRequests || [],
+            trackingOverflow: data.trackingOverflow,
           };
         });
         if (hasLoadedStats.current) setLoading(false);
@@ -479,6 +512,8 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           <RecentRequests requests={stats.recentRequests || []} />
         </div>
       )}
+
+      {!loading && <LifecycleRequests requests={stats.lifecycleRequests || []} overflow={stats.trackingOverflow} />}
 
       {/* Token / Cost chart - sync period */}
       {loading ? spinner : <UsageChart period={period} />}

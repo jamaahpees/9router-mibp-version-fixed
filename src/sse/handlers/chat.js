@@ -10,6 +10,7 @@ import {
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
+import { checkModelAvailability } from "../services/accountStatus.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
@@ -19,7 +20,9 @@ import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "o
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, CLAUDE_PRECOMMIT_TIMEOUT_MS } from "open-sse/config/runtimeConfig.js";
+import { createRequestBudget, localTerminationResult } from "open-sse/utils/requestBudget.js";
+import { createRequestLifecycle } from "@/lib/requestLifecycle.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
@@ -31,10 +34,48 @@ import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
  * Format detection and translation handled by translator
  */
+const requestContexts = new WeakMap();
+
 export async function handleChat(request, clientRawRequest = null) {
+  const arrivedAt = performance.now();
+  const lifecycle = createRequestLifecycle({});
+  const isClaudeEndpoint = new URL(request.url).pathname.endsWith("/messages");
+  const budget = createRequestBudget({ signal: request.signal, deadlineAt: isClaudeEndpoint ? arrivedAt + CLAUDE_PRECOMMIT_TIMEOUT_MS : Infinity });
+  const context = { lifecycle, budget };
+  requestContexts.set(request, context);
+  const finish = (status) => { lifecycle.finish(status); budget.dispose(); };
+  try {
+    const response = await budget.wait(handleChatRequest(request, clientRawRequest));
+    budget.commit();
+    if (!response.body) { finish(response.ok ? "completed" : "error"); return response; }
+    const reader = response.body.getReader();
+    return new Response(new ReadableStream({
+      async pull(controller) {
+        try {
+          const next = await budget.wait(reader.read());
+          if (next.done) { finish(response.ok ? context.streamOutcome || "completed" : "error"); controller.close(); }
+          else controller.enqueue(next.value);
+        } catch (error) {
+          reader.cancel(error).catch(() => {});
+          finish(error?.name === "TimeoutError" ? "timeout" : "aborted");
+          controller.error(error);
+        }
+      },
+      cancel(reason) { finish("aborted"); return reader.cancel(reason); },
+    }), { status: response.status, statusText: response.statusText, headers: response.headers });
+  } catch (error) {
+    finish(error?.name === "TimeoutError" ? "timeout" : "aborted");
+    if (budget.signal.aborted || error?.localTermination) return localTerminationResult(error).response;
+    throw error;
+  }
+}
+
+async function handleChatRequest(request, clientRawRequest = null) {
+  const requestContext = requestContexts.get(request);
   let body;
   try {
     body = await request.json();
+    requestContext?.budget.check();
   } catch {
     log.warn("CHAT", "Invalid JSON body");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
@@ -52,7 +93,9 @@ export async function handleChat(request, clientRawRequest = null) {
   // Claude Code marks a 1M-context request as `<model>[1m]`; the marker matches
   // no combo, alias or provider/model pair, so it must not reach resolution.
   // The capability travels in the anthropic-beta header, forwarded as-is.
+  if (body.stream === false) requestContext?.budget.disableDeadline();
   const { model: modelStr, contextMarker } = stripModelContextMarker(body.model);
+  requestContext?.lifecycle.onPhase("received", { model: modelStr });
   if (contextMarker) body.model = modelStr;
 
   // Request summary is emitted as the unified "▶" line in chatCore (has fmt/thinking/account)
@@ -105,6 +148,7 @@ export async function handleChat(request, clientRawRequest = null) {
 
   // Check if model is a combo (has multiple models with fallback)
   const comboModels = await getComboModels(modelStr);
+  requestContext?.budget.check();
   if (comboModels) {
     // Check for combo-specific strategy first, fallback to global
     const comboStrategies = settings.comboStrategies || {};
@@ -144,8 +188,11 @@ export async function handleChat(request, clientRawRequest = null) {
       ),
       log,
       comboName: modelStr,
-      comboStrategy,
-      comboStickyLimit
+      // Capability-adapter requests are request-local; never move the grading cursor.
+      comboStrategy: comboStrategy === "fallback-grading" && adapterAdded.length ? "fallback" : comboStrategy,
+      comboStickyLimit,
+      signal: request?.signal,
+      checkModelAvailability
     });
   }
 
@@ -176,6 +223,7 @@ export async function handleChat(request, clientRawRequest = null) {
  */
 async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
   const modelInfo = await getModelInfo(modelStr);
+  if (request) requestContexts.get(request)?.budget.check();
 
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
@@ -221,8 +269,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         ),
         log,
         comboName: modelStr,
-        comboStrategy,
-        comboStickyLimit
+        // Capability-adapter requests must not change the grading cursor.
+        comboStrategy: comboStrategy === "fallback-grading" && adapterAdded.length ? "fallback" : comboStrategy,
+        comboStickyLimit,
+        signal: request?.signal,
+        checkModelAvailability
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
@@ -241,8 +292,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastError = null;
   let lastStatus = null;
 
+  const context = request && requestContexts.get(request);
+  const budget = context?.budget;
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    budget?.check();
+    const selection = getProviderCredentials(provider, excludeConnectionIds, model, {
+      signal: budget?.signal || request?.signal,
+      onPhase: (phase) => context?.lifecycle.onPhase(phase, { provider, model }),
+    });
+    const credentials = budget ? await budget.wait(selection) : await selection;
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -261,11 +319,16 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
 
     // Account selection shown in the unified "▶" line (acc:...)
-    const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    const attempt = context?.lifecycle.beginAttempt({ provider, model, connectionId: credentials.connectionId });
+    attempt?.onPhase("preparing_credentials");
+    const refresh = checkAndRefreshToken(provider, credentials);
+    const refreshedCredentials = budget ? await budget.wait(refresh) : await refresh;
 
     // Ensure real project ID is available for providers that need it (P0 fix: cold miss)
     if ((provider === "antigravity" || provider === "gemini-cli") && !refreshedCredentials.projectId) {
-      const pid = await getProjectIdForConnection(credentials.connectionId, refreshedCredentials.accessToken, provider);
+      budget?.check();
+      const discovery = getProjectIdForConnection(credentials.connectionId, refreshedCredentials.accessToken, provider);
+      const pid = budget ? await budget.wait(discovery) : await discovery;
       if (pid) {
         refreshedCredentials.projectId = pid;
         // Persist to DB in background so subsequent requests have it immediately
@@ -276,7 +339,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Use shared chatCore
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    budget?.check();
+    attempt?.onPhase("preparing_request");
     const result = await handleChatCore({
+      requestContext: { signal: budget?.signal || request?.signal, deadlineAt: budget?.deadlineAt, wait: budget ? (work) => budget.wait(work) : null,
+        check: () => budget?.check(), onPhase: (phase) => attempt?.onPhase(phase),
+        onMilestone: (name) => attempt?.onMilestone(name), finishAttempt: (status) => { attempt?.finishAttempt(status); if (context && (status === "completed" || status === "error" || status === "aborted" || status === "timeout")) context.streamOutcome = status; }, pendingId: attempt?.id },
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
@@ -336,6 +404,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     });
 
     if (result.success) return result.response;
+    attempt?.finishAttempt(result.localTermination ? (result.status === 504 ? "timeout" : "aborted") : "error");
+    if (result.localTermination) {
+      throw Object.assign(new Error(result.error), { name: result.status === 504 ? "TimeoutError" : "AbortError", status: result.status, localTermination: true });
+    }
+    if (budget?.signal.aborted) budget.check();
+    budget?.check();
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;
