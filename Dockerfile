@@ -57,8 +57,9 @@ RUN apk --no-cache upgrade && apk --no-cache add su-exec && \
 EXPOSE 20128
 
 # Health: Next serves /api/health (dashboardGuard public path).
+# Use the runtime port so parallel instances (e.g. PORT=20129) are checked correctly.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:20128/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "const port=process.env.PORT||20128;fetch('http://127.0.0.1:'+port+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "custom-server.js"]
