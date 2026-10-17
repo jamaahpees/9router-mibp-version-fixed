@@ -187,10 +187,20 @@ export default function ModelSelectModal({
       ? NO_AUTH_PROVIDER_IDS.filter((id) => (AI_PROVIDERS[id]?.serviceKinds || ["llm"]).includes(kindFilter))
       : NO_AUTH_PROVIDER_IDS;
 
+    // Compatible nodes with registered custom models are selectable without an API-key connection.
+    // They are LLM-only, so keep them out of typed model pickers.
+    const compatibleNodeIds = kindFilter
+      ? []
+      : customModels
+          .filter((m) => m && m.providerAlias)
+          .map((m) => m.providerAlias)
+          .filter((alias) => isOpenAICompatibleProvider(alias) || isAnthropicCompatibleProvider(alias));
+
     // Only show connected providers (including both standard and custom)
     const providerIdsToShow = new Set([
       ...activeConnectionIds,  // Only connected providers
       ...noAuthIds,            // No-auth providers (kind-filtered)
+      ...compatibleNodeIds,    // Compatible nodes with user-added models
     ]);
 
     // Sort by PROVIDER_ORDER
@@ -345,7 +355,7 @@ export default function ModelSelectModal({
         // Custom models registered via /api/models/custom (provider "Add Model" button)
         const customAliasIds = new Set(customAliasModels.map((m) => m.id));
         const customRegisteredModels = customModels
-          .filter((m) => m.providerAlias === alias && !hardcodedIds.has(m.id) && !customAliasIds.has(m.id))
+          .filter((m) => m && m.providerAlias === alias && !hardcodedIds.has(m.id) && !customAliasIds.has(m.id))
           .map((m) => ({ id: m.id, name: m.name || m.id, value: `${alias}/${m.id}`, isCustom: true }));
 
         const merged = [
