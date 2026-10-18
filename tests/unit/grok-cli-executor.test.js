@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+vi.mock("../../open-sse/shared/machineId.js", () => ({ getConsistentMachineId: vi.fn() }));
+vi.mock("undici", () => ({ Agent: class {} }));
+vi.mock("uuid", () => ({ v4: () => "00000000-0000-0000-0000-000000000000" }));
 import {
   GrokCliExecutor,
   countGrokCliUserTurns,
@@ -6,6 +10,7 @@ import {
   _resetGrokCliTurnStore,
   _getGrokCliTurnStoreSize,
   normalizeGrokCliEffort,
+  normalizeGrokCliInput,
   supportsGrokCliReasoningEffort,
 } from "../../open-sse/executors/grok-cli.js";
 import { getExecutor, hasSpecializedExecutor } from "../../open-sse/executors/index.js";
@@ -198,6 +203,88 @@ describe("GrokCliExecutor", () => {
     expect(out.input[0].role).toBe("system");
     expect(out.input[1].id).toBeUndefined();
     expect(out.reasoning.effort).toBe("medium");
+  });
+
+  it("promotes additional_tools arrays without losing existing tools or history", () => {
+    const existing = { type: "web_search" };
+    const custom = { type: "custom", name: "exec" };
+    const nested = { type: "function", function: { name: "lookup" } };
+    const history = [
+      { type: "message", role: "user", content: "continue" },
+      { type: "function_call", call_id: "call-1", name: "lookup", arguments: "{}" },
+      { type: "function_call_output", call_id: "call-1", output: "done" },
+      { type: "message", role: "assistant", content: "ready" },
+    ];
+    const body = {
+      tools: [existing],
+      input: [history[0], { type: "additional_tools", tools: [custom] },
+        ...history.slice(1), { type: "additional_tools", tools: [nested] }],
+    };
+
+    expect(normalizeGrokCliInput(body)).toBe(body);
+    expect(body.tools).toEqual([existing, custom, nested]);
+    expect(body.input).toEqual(history);
+    const once = structuredClone(body);
+    normalizeGrokCliInput(body);
+    expect(body).toEqual(once);
+  });
+
+  it.each([undefined, null, {}, "invalid", 7])(
+    "ignores non-array additional_tools tools %j while retaining valid declarations",
+    (tools) => {
+      const promoted = { type: "custom", name: "exec" };
+      const message = { type: "message", role: "user", content: "hi" };
+      const body = {
+        input: [message, { type: "additional_tools", tools },
+          { type: "additional_tools", tools: [promoted] }],
+      };
+      expect(() => normalizeGrokCliInput(body)).not.toThrow();
+      expect(body.tools).toEqual([promoted]);
+      expect(body.input).toEqual([message]);
+    }
+  );
+
+  it("removes malformed additional_tools declarations without changing existing tools", () => {
+    const existing = { type: "web_search" };
+    const message = { type: "message", role: "user", content: "hi" };
+    const body = { tools: [existing], input: [message, { type: "additional_tools", tools: {} }] };
+    normalizeGrokCliInput(body);
+    expect(body.tools).toEqual([existing]);
+    expect(body.input).toEqual([message]);
+  });
+
+  it("transformRequest normalizes promoted custom and nested function tools", () => {
+    const parameters = { type: "object", properties: { query: { type: "string" } } };
+    const history = [
+      { type: "message", role: "user", content: "continue" },
+      { type: "function_call", call_id: "call-1", name: "lookup", arguments: "{}" },
+      { type: "function_call_output", call_id: "call-1", output: "done" },
+    ];
+    const out = executor.transformRequest("grok-build", {
+      model: "grok-build",
+      tools: [{ type: "web_search" }],
+      tool_choice: { type: "custom", name: "exec" },
+      input: [history[0], {
+        type: "additional_tools",
+        tools: [
+          { type: "custom", name: "exec", description: "Run command" },
+          { type: "function", function: { name: "lookup", description: "Lookup", parameters } },
+        ],
+      }, ...history.slice(1)],
+    }, true, { connectionId: "additional-tools" });
+
+    expect(out.tools).toEqual([
+      { type: "web_search" },
+      { type: "function", name: "exec", description: "Run command", parameters: {
+        type: "object", properties: { input: { type: "string" } }, required: ["input"],
+      } },
+      { type: "function", name: "lookup", description: "Lookup", parameters },
+    ]);
+    expect(out.tool_choice).toEqual({ type: "function", name: "exec" });
+    expect(out.input).toEqual(history);
+    const once = structuredClone(out);
+    executor.transformRequest("grok-build", out, true, { connectionId: "additional-tools" });
+    expect(out).toEqual(once);
   });
 
   it("normalizes Codex cross-provider tool and reasoning history", () => {

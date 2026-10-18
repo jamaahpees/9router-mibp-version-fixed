@@ -208,7 +208,13 @@ function normalizeGrokCliInputItem(item) {
 
 export function normalizeGrokCliInput(body) {
   if (!Array.isArray(body?.input)) return body;
-  const normalized = body.input.map(normalizeGrokCliInputItem).filter(Boolean);
+  const normalized = body.input.filter((item) => {
+    if (item?.type !== "additional_tools") return true;
+    if (Array.isArray(item.tools)) {
+      body.tools = [...(Array.isArray(body.tools) ? body.tools : []), ...item.tools];
+    }
+    return false;
+  }).map(normalizeGrokCliInputItem).filter(Boolean);
   const callIds = new Set(
     normalized
       .filter((item) => item?.type === "function_call" && item.call_id)
