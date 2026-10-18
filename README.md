@@ -1,18 +1,41 @@
-# 9Router MIBP Version
+# 9Router MIBP Version (Fixed & Hardened)
 
-A local AI routing gateway with provider fallback and token-saving features. This is a fork of [decolua/9router](https://github.com/decolua/9router).
+A local and remote AI routing gateway with intelligent provider fallback, token-saving features, and high-concurrency lifecycle tracking. 
 
-## Installation
+This repository is a hardened fork of [decolua/9router](https://github.com/decolua/9router) optimized for modern coding agents (OpenCode, Claude Code, Codex, Grok CLI).
 
-### Option 1: Docker
+---
 
-Pull the image:
+## 🚀 Key Improvements & Fixes over Upstream
 
-```bash
-docker pull mhiqrambhrng/9router-mibp-version:latest
-```
+### 1. Claude Client Format Integrity (Zero-Crash Fallback)
+* **Forced SSE to Anthropic Message Conversion:** In upstream 9Router, when an Anthropic/Claude client calls a model combo and triggers non-streaming fallback to OpenAI/Codex upstreams, it returns raw OpenAI `chat.completion` JSON, causing fatal client crashes (`HTTP 200 ... JSON but not a Message`). This fork automatically parses and converts forced SSE/non-streaming responses back to native Anthropic `type: "message"` structures.
+* **Adaptive Thinking & Tool Choice Normalization:** Normalizes `reasoning_effort`, handles adaptive thinking downgrades gracefully, and clips token ceilings per provider capabilities.
 
-Run the container:
+### 2. Grok CLI / xAI Compatibility
+* **`additional_tools` Promotion (Fix HTTP 422 `unknown item type`):** Coding clients like Codex and OpenCode wrap tool definitions inside conversation history (`input: [{ type: "additional_tools", ... }]`). Upstream xAI Rust backends reject this with a 422 deserialization error. This fork extracts and promotes declared tools to top-level `body.tools` and purges `additional_tools` from the input stream.
+* **Client Version Sync:** Updated `x-grok-client-version` to `1.0.52` to prevent rejection from official xAI endpoints.
+
+### 3. Antigravity & Modern Model Catalog
+* **Claude 5.5 Support:** Full catalog mappings, thinking configs, pricing tiers, and MITM proxy aliases for Claude 5.5.
+* **Precise Rate-Limit Handling (429/409):** Parses upstream `resetAt` timestamps and retry delays into a local quota cache to prevent request flooding on locked accounts.
+
+### 4. High-Concurrency Request Lifecycle & Locking
+* **Per-Provider Selection Queue:** Mutex-based account selection queue preventing race conditions during concurrent account rotation (round-robin / fill-first).
+* **160s Precommit Deadline:** Enforces request deadlines with early termination for stalled upstream streams, automatically triggering failover.
+* **Single-Flight OAuth Refresh:** Deduplicates concurrent token refresh calls so only one refresh request hits auth servers per connection.
+
+### 5. Multi-Instance Docker Architecture
+* **Dynamic Healthcheck Port:** Replaced static port `20128` in Dockerfile with `process.env.PORT || 20128`, enabling multiple parallel instances (e.g., `10router` on port `20129`) to report healthy status.
+
+### 6. UI & Combo Picker Resilience
+* **Null-Safe Model Mapping:** Added null guards in `ModelSelectModal.js` to prevent frontend crashes (`reading 'providerAlias'`) and surfaces compatible provider nodes even without active connections.
+
+---
+
+## 📦 Installation & Quick Start
+
+### Option 1: Docker Run
 
 ```bash
 mkdir -p 9router-data
@@ -31,39 +54,34 @@ docker run -d \
   mhiqrambhrng/9router-mibp-version:latest
 ```
 
-Or using Docker Compose (a `docker-compose.yml` is included in this repo):
+### Option 2: Docker Compose
 
 ```bash
-cp .env.example .env   # fill in JWT_SECRET, INITIAL_PASSWORD, API_KEY_SECRET, MACHINE_ID_SALT
+cp .env.example .env
+# Edit .env and supply your secrets
 docker compose up -d
 ```
 
-Dashboard opens at `http://localhost:20128/dashboard`.
+Dashboard is available at `http://localhost:20128/dashboard`.
 
-### Option 2: Manual (from source)
+### Option 3: Manual (From Source)
 
 Requirements: Node.js 22 or newer.
 
 ```bash
-git clone https://github.com/mhiqrambg/9router-mibp-version.git
-cd 9router-mibp-version
+git clone https://github.com/jamaahpees/9router-mibp-version-fixed.git
+cd 9router-mibp-version-fixed
 
 cp .env.example .env
-# Edit .env: set JWT_SECRET, INITIAL_PASSWORD, API_KEY_SECRET, MACHINE_ID_SALT
-
 npm install
-
-# Development server
-npm run dev
-
-# Or production build
 npm run build
 npm run start
 ```
 
-Dashboard opens at `http://localhost:20128/dashboard`.
+---
 
-## More Information
+## 🔗 References & Upstream
 
-- Upstream project: [https://github.com/decolua/9router](https://github.com/decolua/9router)
-- Upstream docs: [DOCKER.md](DOCKER.md) • [ARCHITECTURE.md](docs/ARCHITECTURE.md)
+* Upstream Project: [decolua/9router](https://github.com/decolua/9router)
+* Architecture Overview: [ARCHITECTURE.md](docs/ARCHITECTURE.md)
+* Docker Setup Guide: [DOCKER.md](DOCKER.md)
