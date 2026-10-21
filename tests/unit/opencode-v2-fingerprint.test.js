@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import opencode from "../../open-sse/providers/registry/opencode.js";
 import { OpenCodeExecutor } from "../../open-sse/executors/opencode.js";
 import {
   OPENCODE_FINGERPRINT_TOOLS,
@@ -8,7 +9,7 @@ import {
 } from "../../open-sse/utils/opencodeFingerprint.js";
 
 const CHAT_MODEL = "deepseek-v4.1-flash-free";
-const RESPONSES_MODEL = "muse-spark-1.3-contributor-free";
+const RESPONSES_MODEL = "muse-spark-1.3";
 // Upstream decodes this prefix and rejects a non-small counter with 403
 // FreeTierError (live probes: counter 0-16 pass, >=100 fail).
 const SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
@@ -20,6 +21,22 @@ function counterOf(session) {
 }
 
 describe("OpenCode 2.0 free-tier fingerprint", () => {
+  it("advertises the current free models, not the retired Muse Spark free ids", () => {
+    const ids = opencode.models.map((model) => model.id);
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        "big-pickle",
+        "beam-free",
+        "glm-5.3-flash-free",
+        "deepseek-v4.1-flash-free",
+        "nemotron-3.5-super-vl-free",
+      ])
+    );
+    expect(ids).not.toContain("muse-spark-1.2-contributor-free");
+    expect(ids).not.toContain("muse-spark-1.3-contributor-free");
+    expect(opencode.modelsFetcher.url).toBe("https://opencode.ai/inference/v1/models");
+  });
+
   it("routes both formats through /inference/v1", () => {
     const executor = new OpenCodeExecutor();
     expect(executor.buildUrl(CHAT_MODEL)).toBe("https://opencode.ai/inference/v1/chat/completions");

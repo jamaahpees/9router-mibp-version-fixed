@@ -17,13 +17,6 @@ const OPENCODE_CLIENT = "cli";
 const SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-// Models served by /inference/v1/responses; every other model stays on
-// /inference/v1/chat/completions, so the format is declared per-model.
-const RESPONSES_MODELS = new Set([
-  "muse-spark-1.2-contributor-free",
-  "muse-spark-1.3-contributor-free",
-]);
-
 let lastTimestamp = 0;
 let counter = 0;
 
@@ -85,8 +78,9 @@ function baseModelId(model) {
 }
 
 function isResponsesModel(model) {
-  const base = baseModelId(model);
-  return RESPONSES_MODELS.has(base) || isMuseSparkModel(base);
+  // Muse Spark ids (paid, or the retired contributor-free ones) speak the
+  // Responses API; every other model stays on chat/completions.
+  return isMuseSparkModel(baseModelId(model));
 }
 
 function resolveOpencodeSession(body, credentials) {

@@ -49,31 +49,30 @@ describe("antigravity retry (intentional change: 429=6, 503=3)", () => {
 });
 
 describe("OpenCode Free endpoint routing", () => {
-  const MUSE = "muse-spark-1.2-contributor-free";
-
-  it("declares the Responses format only on the Muse Spark model", () => {
+  it("lists the current free-tier models and no deprecated ones", () => {
     expect(opencode.transport.format).toBeUndefined();
-    const muse = opencode.models.find((m) => m.id === MUSE);
-    expect(muse?.targetFormat).toBe("openai-responses");
-    const muse13 = opencode.models.find((m) => m.id === "muse-spark-1.3-contributor-free");
-    expect(muse13?.targetFormat).toBe("openai-responses");
+    const ids = opencode.models.map((m) => m.id);
+    expect(ids).toEqual(expect.arrayContaining([
+      "big-pickle",
+      "glm-5.3-flash-free",
+      "deepseek-v4.1-flash-free",
+    ]));
+    expect(ids).not.toContain("muse-spark-1.2-contributor-free");
+    expect(ids).not.toContain("muse-spark-1.3-contributor-free");
   });
 
   it("routes Muse Spark to /responses and every other model to /chat/completions", () => {
     const executor = new OpenCodeExecutor();
-    expect(executor.buildUrl(MUSE)).toBe("https://opencode.ai/zen/v1/responses");
-    expect(executor.buildUrl(`${MUSE}(xhigh)`)).toBe("https://opencode.ai/zen/v1/responses");
-    expect(executor.buildUrl("muse-spark-1.3-contributor-free")).toBe("https://opencode.ai/zen/v1/responses");
-    expect(executor.buildUrl("muse-spark-1.4-contributor-free")).toBe("https://opencode.ai/zen/v1/responses");
-    expect(executor.buildUrl("muse-spark-2.0-contributor-free(xhigh)")).toBe("https://opencode.ai/zen/v1/responses");
-    expect(executor.buildUrl("big-pickle")).toBe("https://opencode.ai/zen/v1/chat/completions");
-    expect(executor.buildUrl("hy3-free")).toBe("https://opencode.ai/zen/v1/chat/completions");
+    expect(executor.buildUrl("muse-spark-1.3")).toBe("https://opencode.ai/inference/v1/responses");
+    expect(executor.buildUrl("muse-spark-1.3(xhigh)")).toBe("https://opencode.ai/inference/v1/responses");
+    expect(executor.buildUrl("big-pickle")).toBe("https://opencode.ai/inference/v1/chat/completions");
+    expect(executor.buildUrl("glm-5.3-flash-free")).toBe("https://opencode.ai/inference/v1/chat/completions");
   });
 
   it("normalizes Chat token/thinking fields only for the Responses model", () => {
     const executor = new OpenCodeExecutor();
     const muse = { max_tokens: 4096, reasoning_effort: "high" };
-    executor.transformRequest(MUSE, muse, true, {});
+    executor.transformRequest("muse-spark-1.3", muse, true, {});
     expect(muse.max_output_tokens).toBe(4096);
     expect(muse.max_tokens).toBeUndefined();
     expect(muse.reasoning).toEqual({ effort: "high", summary: "auto" });
