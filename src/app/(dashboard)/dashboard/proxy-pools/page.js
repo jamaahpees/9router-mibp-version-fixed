@@ -577,6 +577,9 @@ export default function ProxyPoolsPage() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl font-semibold sm:text-2xl">Proxy Pools</h1>
+          <p className="mt-1 text-xs text-text-muted">
+            Custom HTTP proxies are health-checked every 10 minutes. Slow or dead entries are auto-disabled.
+          </p>
         </div>
 
         <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
@@ -595,6 +598,17 @@ export default function ProxyPoolsPage() {
 
             {showRelayMenu && (
               <div className="absolute left-0 top-full z-50 mt-1 w-48 rounded-xl border border-black/10 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-zinc-900 sm:left-auto sm:right-0">
+                <button
+                  onClick={() => {
+                    openCreateModal();
+                    setShowRelayMenu(false);
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-text-main transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                >
+                  <span className="material-symbols-outlined text-[20px] text-purple-500">settings_ethernet</span>
+                  Custom Proxy
+                </button>
+                <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
                 <button
                   onClick={() => {
                     openCloudflareModal();
@@ -722,6 +736,12 @@ export default function ProxyPoolsPage() {
                     {pool.type === "cloudflare" && (
                       <Badge variant="default" size="sm">cloudflare relay</Badge>
                     )}
+                    {pool.type === "http" && (
+                      <Badge variant="default" size="sm">custom</Badge>
+                    )}
+                    {pool.autoDisabled && (
+                      <Badge variant="default" size="sm">auto-off</Badge>
+                    )}
                     <Badge variant="default" size="sm">
                       {pool.boundConnectionCount || 0} bound
                     </Badge>
@@ -732,6 +752,7 @@ export default function ProxyPoolsPage() {
                   ) : null}
                   <p className="text-[11px] text-text-muted mt-1">
                     Last tested: {formatDateTime(pool.lastTestedAt)}
+                    {pool.lastLatencyMs != null ? ` · ${pool.lastLatencyMs}ms` : ""}
                     {pool.lastError ? ` · ${pool.lastError}` : ""}
                   </p>
                   </div>
