@@ -5,54 +5,78 @@ import { getThinkingLevels } from "../providers/thinkingLevels.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { isMuseSparkModel } from "../providers/models/helpers.js";
+import { applyFingerprintTools } from "../utils/opencodeFingerprint.js";
 
-// Upstream opencode free tier (2026-09) validates requests against the real
-// OpenCode CLI fingerprint:
-//   - session ids must match ^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$
-//     (12 lowercase hex + 14 base62); anything else → 403 FreeTierError
-//     "OpenCode's free tier can only be used from within OpenCode"
-//   - User-Agent must carry a version >= 1.18 (opencode/1.18.31 ...)
-//   - x-opencode-client must be "cli"
-//   - x-opencode-project must be a 40-hex random id
-//   - body must stream (stream:true) and include the bash/glob/grep/read tools
-const OPENCODE_UA = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14";
+// Upstream validates requests against the real OpenCode CLI fingerprint.
+//
+// Since 2026-10-14 the v1 `opencode/1.18.x` User-Agent is answered with 403
+// FreeTierError; the v2 CLI sends `opencode/<channel>/<semver>/<client>`.
+// Free-tier traffic also moved from /zen/v1 to /inference/v1.
+const OPENCODE_UA = "opencode/latest/2.1.1/cli";
+const OPENCODE_CLIENT = "cli";
 const SESSION_RE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
-const REQUEST_RE = /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-// Models served by /zen/v1/responses; every other model stays on /chat/completions.
+// Models served by /inference/v1/responses; every other model stays on
+// /inference/v1/chat/completions, so the format is declared per-model.
 const RESPONSES_MODELS = new Set([
   "muse-spark-1.2-contributor-free",
   "muse-spark-1.3-contributor-free",
 ]);
 
-const HEX = "0123456789abcdef";
-const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+let lastTimestamp = 0;
+let counter = 0;
 
-function randomFrom(bytes, alphabet) {
+function unstableRandom() {
+  const bytes = crypto.randomBytes(14);
   let out = "";
-  for (const b of bytes) out += alphabet[b % alphabet.length];
+  for (let i = 0; i < 14; i++) out += BASE62_CHARS[bytes[i] % 62];
   return out;
 }
 
-// Upstream-valid id: prefix + 12 lowercase hex + 14 base62 (26 chars total).
-function generateCompliantId(prefix) {
-  return `${prefix}${randomFrom(crypto.randomBytes(12), HEX)}${randomFrom(crypto.randomBytes(14), ALNUM)}`;
+// Session prefix = 12 hex of ~(timeMs * 0x1000 + counter), low 48 bits, like
+// the CLI. Upstream decodes it and rejects a non-small counter with 403
+// FreeTierError (live probes: counter 0-16 pass, >=100 fail), so the counter
+// must stay real instead of being random.
+const SESSION_PREFIX_MASK = (1n << 48n) - 1n;
+const SESSION_TIME_MASK = (1n << 36n) - 1n;
+
+function descendingTimeHex(time, counterValue) {
+  return (~(BigInt(time) * 0x1000n + BigInt(counterValue)) & SESSION_PREFIX_MASK)
+    .toString(16)
+    .padStart(12, "0");
 }
 
-function generateRequestId() {
-  return generateCompliantId("msg_");
+function generateSessionId(timestamp = Date.now()) {
+  if (timestamp !== lastTimestamp) {
+    lastTimestamp = timestamp;
+    counter = 0;
+  }
+  counter++;
+  return `ses_${descendingTimeHex(timestamp, counter)}${unstableRandom()}`;
 }
 
-function generateSessionId() {
-  return generateCompliantId("ses_");
+// Deterministically map any downstream session id into the canonical shape.
+// The counter is pinned to 1 (what the CLI sends) and the time field derives
+// from the digest, so retries keep the same id.
+function translateSessionId(sessionId, clientTool = "") {
+  if (typeof sessionId === "string" && SESSION_RE.test(sessionId.trim())) {
+    return sessionId.trim();
+  }
+  const digest = crypto
+    .createHash("sha256")
+    .update(`opencode\0${clientTool || "generic"}\0${sessionId || ""}`)
+    .digest();
+  const time = BigInt(`0x${digest.subarray(0, 5).toString("hex")}`) & SESSION_TIME_MASK;
+  const timeHex = descendingTimeHex(time, 1);
+  let randomPart = "";
+  for (let i = 6; i < 20; i++) randomPart += BASE62_CHARS[digest[i] % 62];
+  return `ses_${timeHex}${randomPart}`;
 }
 
-function generateProjectId() {
-  return crypto.randomBytes(20).toString("hex"); // 40 hex chars
-}
-
-function isCompliant(value, re) {
-  return typeof value === "string" && re.test(value);
+function hasValidOpencodeVersion(ua) {
+  const m = String(ua || "").match(/^opencode\/[a-z0-9-]+\/(\d+)\.\d+\.\d+\/[a-z0-9-]+$/i);
+  return !!m && parseInt(m[1], 10) >= 2;
 }
 
 // Strip the thinking suffix "model(level)" so registry lookups hit the base id.
@@ -67,13 +91,16 @@ function isResponsesModel(model) {
 
 function resolveOpencodeSession(body, credentials) {
   const headers = credentials?.rawHeaders || {};
-  return resolveSessionId({
+  const resolved = resolveSessionId({
     headers,
     body,
     connectionId: credentials?.connectionId,
     scope: "opencode",
-    generate: generateSessionId,
   });
+  if (!resolved) return generateSessionId();
+  // A client-supplied session in any other format would trip the upstream
+  // fingerprint gate, so translate it into the canonical shape.
+  return SESSION_RE.test(String(resolved)) ? resolved : translateSessionId(resolved);
 }
 
 function normalizeOpencodeReasoning(model, body) {
@@ -105,38 +132,6 @@ function normalizeOpencodeReasoning(model, body) {
 // it shows up (clearable) on the Proxy Fitness page.
 const IP_LIMIT_BODY = /limit|rate|quota|exhausted|capacity|too many|retry/i;
 
-// ======================== Free-tier fingerprint ========================
-// Upstream requires the four tools bash/glob/grep/read in the request body
-// (only the names are checked; descriptions/schemas are arbitrary). Missing
-// any of them triggers the same 403 FreeTierError.
-
-const FREE_TOOLS_CHAT = [
-  { type: "function", function: { name: "bash", description: "Run a shell command and return its output", parameters: { type: "object", properties: { command: { type: "string", description: "The shell command to execute" } }, required: ["command"] } } },
-  { type: "function", function: { name: "glob", description: "Find files matching a glob pattern", parameters: { type: "object", properties: { pattern: { type: "string", description: "The glob pattern to match files against" } }, required: ["pattern"] } } },
-  { type: "function", function: { name: "grep", description: "Search file contents with a regular expression", parameters: { type: "object", properties: { pattern: { type: "string", description: "The regular expression pattern to search for" } }, required: ["pattern"] } } },
-  { type: "function", function: { name: "read", description: "Read the contents of a file", parameters: { type: "object", properties: { file_path: { type: "string", description: "The path of the file to read" } }, required: ["file_path"] } } },
-];
-
-// Responses API shape for /zen/v1/responses models.
-const FREE_TOOLS_RESPONSES = [
-  { type: "function", name: "bash", description: "Run a shell command and return its output", parameters: { type: "object", properties: { command: { type: "string", description: "The shell command to execute" } }, required: ["command"] } },
-  { type: "function", name: "glob", description: "Find files matching a glob pattern", parameters: { type: "object", properties: { pattern: { type: "string", description: "The glob pattern to match files against" } }, required: ["pattern"] } },
-  { type: "function", name: "grep", description: "Search file contents with a regular expression", parameters: { type: "object", properties: { pattern: { type: "string", description: "The regular expression pattern to search for" } }, required: ["pattern"] } },
-  { type: "function", name: "read", description: "Read the contents of a file", parameters: { type: "object", properties: { file_path: { type: "string", description: "The path of the file to read" } }, required: ["file_path"] } },
-];
-
-function ensureFreeTierTools(body, tools) {
-  if (!body || typeof body !== "object" || Array.isArray(body)) return;
-  const raw = Array.isArray(body.tools) ? body.tools : [];
-  const existing = new Set();
-  for (const t of raw) {
-    const name = t?.function?.name || t?.name;
-    if (typeof name === "string" && name) existing.add(name);
-  }
-  const missing = tools.filter(t => !existing.has(t.function?.name || t.name));
-  if (missing.length > 0) body.tools = [...raw, ...missing];
-}
-
 export class OpenCodeExecutor extends BaseExecutor {
   constructor() {
     super("opencode", PROVIDERS.opencode);
@@ -145,11 +140,6 @@ export class OpenCodeExecutor extends BaseExecutor {
 
   transformRequest(model, body, stream, credentials) {
     this._currentSessionId = resolveOpencodeSession(body, credentials);
-    // Only upstream-valid ids are forwarded; a client-supplied session in any
-    // other format would trip the 403 fingerprint gate.
-    if (!isCompliant(this._currentSessionId, SESSION_RE)) {
-      this._currentSessionId = generateSessionId();
-    }
 
     if (isResponsesModel(model)) {
       // Responses API names the output cap max_output_tokens and takes thinking
@@ -161,14 +151,16 @@ export class OpenCodeExecutor extends BaseExecutor {
       delete body.max_tokens;
       delete body.max_completion_tokens;
       normalizeOpencodeReasoning(model, body);
-      // /zen/v1/responses fingerprint: streaming + four required tools.
       body.stream = true;
-      ensureFreeTierTools(body, FREE_TOOLS_RESPONSES);
+      body.store = false;
+      // Free-tier fingerprint: upstream compares the read/shell definitions
+      // verbatim and defaults tool_choice to "auto" (never "none").
+      applyFingerprintTools(body, true);
     } else {
-      // /zen/v1/chat/completions fingerprint: streaming + four required tools
-      // + usage in the stream.
+      // /inference/v1/chat/completions fingerprint: streaming + usage in the
+      // stream + OpenCode's own read/shell tools.
       body.stream = true;
-      ensureFreeTierTools(body, FREE_TOOLS_CHAT);
+      applyFingerprintTools(body, false);
       if (body.stream_options && typeof body.stream_options === "object" && !Array.isArray(body.stream_options)) {
         body.stream_options.include_usage = true;
       } else {
@@ -181,37 +173,37 @@ export class OpenCodeExecutor extends BaseExecutor {
   buildUrl(model) {
     const base = this.config.baseUrl;
     return isResponsesModel(model)
-      ? `${base}/zen/v1/responses`
-      : `${base}/zen/v1/chat/completions`;
+      ? `${base}/inference/v1/responses`
+      : `${base}/inference/v1/chat/completions`;
   }
 
-  buildHeaders(credentials, stream = true) {
+  buildHeaders(credentials) {
     const raw = credentials?.rawHeaders || {};
     const lower = {};
     for (const [k, v] of Object.entries(raw)) lower[k.toLowerCase()] = v;
 
     const downstreamUa = lower["user-agent"] || "";
-    const isOpencodeDownstream = downstreamUa.toLowerCase().includes("opencode");
+    // Only preserve a downstream UA that already carries the v2 shape;
+    // v1/bare UAs are rejected upstream with 403 FreeTierError.
+    const useDownstreamUa = hasValidOpencodeVersion(downstreamUa);
 
-    const session = isCompliant(lower["x-opencode-session"], SESSION_RE)
-      ? lower["x-opencode-session"]
-      : (this._currentSessionId || generateSessionId());
-    const requestId = isCompliant(lower["x-opencode-request"], REQUEST_RE)
-      ? lower["x-opencode-request"]
-      : generateRequestId();
+    const session = SESSION_RE.test(String(this._currentSessionId || ""))
+      ? this._currentSessionId
+      : generateSessionId();
 
+    // Mirrors the v2 CLI: x-opencode-session-id travels next to
+    // x-opencode-session, and v1's x-opencode-request is no longer sent.
     return {
       "Content-Type": "application/json",
       "Authorization": "Bearer public",
-      "User-Agent": isOpencodeDownstream ? downstreamUa : OPENCODE_UA,
-      "x-opencode-client": lower["x-opencode-client"] || "cli",
+      "User-Agent": useDownstreamUa ? downstreamUa : OPENCODE_UA,
+      "x-opencode-client": lower["x-opencode-client"] || OPENCODE_CLIENT,
       "x-opencode-session": session,
-      "x-session-id": lower["x-session-id"] || session,
-      "x-session-affinity": lower["x-session-affinity"] || session,
-      "x-opencode-request": requestId,
-      "x-opencode-project": lower["x-opencode-project"] || generateProjectId(),
-      "Accept": "application/json",
-      "Accept-Encoding": "identity",
+      "x-opencode-session-id": session,
+      "x-session-affinity": session,
+      "x-session-id": session,
+      "x-opencode-project": lower["x-opencode-project"] || "global",
+      "Accept": "text/event-stream",
     };
   }
 
