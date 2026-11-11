@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { countBoundConnections } from "@/shared/utils/proxyPoolBinding.js";
 import {
   deleteProxyPool,
   getProviderConnections,
@@ -43,10 +44,6 @@ function normalizeProxyPoolUpdate(body = {}) {
   }
 
   return { updates };
-}
-
-function countBoundConnections(connections = [], proxyPoolId) {
-  return connections.filter((connection) => connection?.providerSpecificData?.proxyPoolId === proxyPoolId).length;
 }
 
 // GET /api/proxy-pools/[id] - Get proxy pool
