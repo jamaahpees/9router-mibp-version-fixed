@@ -768,7 +768,12 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
       case "opencode-go": {
         const res = await fetchWithConnectionProxy("https://opencode.ai/zen/go/v1/chat/completions", {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${connection.apiKey}` },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${connection.apiKey}`,
+            "User-Agent": "9router/1.0",
+            "x-opencode-session": crypto.randomUUID(),
+          },
           body: JSON.stringify({ model: getDefaultModel("opencode-go"), messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false }),
         }, effectiveProxy);
         const valid = res.status !== 401 && res.status !== 403;

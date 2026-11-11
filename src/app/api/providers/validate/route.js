@@ -398,7 +398,12 @@ export async function POST(request) {
         case "opencode-go": {
           const res = await fetch("https://opencode.ai/zen/go/v1/chat/completions", {
             method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${apiKey}`,
+              "User-Agent": "9router/1.0",
+              "x-opencode-session": crypto.randomUUID(),
+            },
             body: JSON.stringify({
               model: getDefaultModel("opencode-go"),
               messages: [{ role: "user", content: "ping" }],
