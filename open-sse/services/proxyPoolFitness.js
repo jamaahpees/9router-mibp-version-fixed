@@ -77,6 +77,12 @@ function providerWildcardScope(scope) {
   return `${scope.slice(0, sep)}::*`;
 }
 
+// Drop every fitness entry for one pool (used when a pool is deleted).
+export function forgetPoolFitness(poolId) {
+  if (!poolId) return;
+  if (fitness.delete(poolId)) schedulePersist();
+}
+
 export function isPoolFit(poolId, scope, now = Date.now()) {
   if (!poolId) return true;
   const byScope = fitness.get(poolId);

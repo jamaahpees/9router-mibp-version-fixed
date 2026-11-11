@@ -56,6 +56,11 @@ export function setPoolGeo(poolId, geo) {
   geoCache.set(poolId, { ...geo, ts: Date.now(), ipHistory });
 }
 
+// Drop the cached egress record for one pool (used when a pool is deleted).
+export function forgetPoolGeo(poolId) {
+  if (poolId) geoCache.delete(poolId);
+}
+
 export function poolGeoSnapshot(now = Date.now()) {
   const out = {};
   for (const [poolId, entry] of geoCache) {

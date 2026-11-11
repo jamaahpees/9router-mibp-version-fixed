@@ -38,3 +38,55 @@ export function countBoundConnections(connections = [], proxyPoolId) {
   if (!proxyPoolId) return 0;
   return connections.filter((connection) => connectionProxyPoolIds(connection).includes(proxyPoolId)).length;
 }
+
+/**
+ * Return provider data with one pool unbound.
+ *
+ * Used by "delete anyway" flows: the pool row disappears, so every reference to
+ * it has to go too, otherwise the connection keeps retrying a dead pool id and
+ * requests fail instead of falling back to the legacy proxy (or direct egress).
+ */
+export function detachProxyPoolFromProviderData(providerSpecificData, proxyPoolId) {
+  const psd = { ...(providerSpecificData || {}) };
+  if (!proxyPoolId) return psd;
+
+  if (Array.isArray(psd.proxyPoolIds)) {
+    const remaining = psd.proxyPoolIds.filter((id) => id !== proxyPoolId);
+    psd.proxyPoolIds = remaining;
+    if (remaining.length === 0) {
+      psd.proxyRotationStrategy = "none";
+    }
+  }
+
+  if (psd.proxyPoolId === proxyPoolId) psd.proxyPoolId = null;
+  if (psd.connectionProxyPoolId === proxyPoolId) psd.connectionProxyPoolId = null;
+
+  const stillBound =
+    (typeof psd.proxyPoolId === "string" && psd.proxyPoolId) ||
+    (Array.isArray(psd.proxyPoolIds) && psd.proxyPoolIds.length > 0) ||
+    (typeof psd.connectionProxyPoolId === "string" && psd.connectionProxyPoolId);
+
+  // Nothing left to route through and no legacy single proxy either: stop
+  // advertising a proxy for this connection.
+  if (!stillBound && !psd.connectionProxyUrl) {
+    psd.connectionProxyEnabled = false;
+  }
+
+  return psd;
+}
+
+/** Remove one pool id from every providerStrategies entry in settings. */
+export function detachProxyPoolFromStrategies(providerStrategies = {}, proxyPoolId) {
+  if (!proxyPoolId || !providerStrategies || typeof providerStrategies !== "object") return null;
+  let changed = false;
+  const next = {};
+  for (const [provider, strategy] of Object.entries(providerStrategies)) {
+    if (strategy && typeof strategy === "object" && strategy.proxyPoolId === proxyPoolId) {
+      next[provider] = { ...strategy, proxyPoolId: null };
+      changed = true;
+    } else {
+      next[provider] = strategy;
+    }
+  }
+  return changed ? next : null;
+}

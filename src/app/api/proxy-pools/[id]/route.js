@@ -1,9 +1,18 @@
 import { NextResponse } from "next/server";
-import { countBoundConnections } from "@/shared/utils/proxyPoolBinding.js";
+import {
+  countBoundConnections,
+  connectionProxyPoolIds,
+  detachProxyPoolFromProviderData,
+  detachProxyPoolFromStrategies,
+} from "@/shared/utils/proxyPoolBinding.js";
+import { getSettings, updateSettings } from "@/lib/localDb";
+import { forgetPoolGeo } from "open-sse/services/poolGeo.js";
+import { forgetPoolFitness } from "open-sse/services/proxyPoolFitness.js";
 import {
   deleteProxyPool,
   getProviderConnections,
   getProxyPoolById,
+  updateProviderConnection,
   updateProxyPool,
 } from "@/models";
 
@@ -88,7 +97,27 @@ export async function PUT(request, { params }) {
   }
 }
 
+// Force flag: "delete anyway" detaches the pool from every account that still
+// points at it. Requests fall back to the legacy single proxy or direct egress.
+async function readForceFlag(request) {
+  try {
+    const url = new URL(request.url);
+    const query = url.searchParams.get("force");
+    if (query === "true" || query === "1") return true;
+  } catch {
+    // Non-standard request URL (tests): fall through to the body check.
+  }
+  try {
+    const body = await request.json();
+    return body?.force === true;
+  } catch {
+    return false;
+  }
+}
+
 // DELETE /api/proxy-pools/[id] - Delete proxy pool
+// Without force this refuses while the pool is bound (upstream behaviour).
+// With force=true it detaches the pool from connections and settings first.
 export async function DELETE(request, { params }) {
   try {
     const { id } = await params;
@@ -99,20 +128,41 @@ export async function DELETE(request, { params }) {
     }
 
     const connections = await getProviderConnections();
-    const boundConnectionCount = countBoundConnections(connections, id);
+    const bound = connections.filter((connection) => connectionProxyPoolIds(connection).includes(id));
 
-    if (boundConnectionCount > 0) {
-      return NextResponse.json(
-        {
-          error: "Proxy pool is currently in use",
-          boundConnectionCount,
-        },
-        { status: 409 }
-      );
+    if (bound.length > 0) {
+      const force = await readForceFlag(request);
+      if (!force) {
+        return NextResponse.json(
+          {
+            error: "Proxy pool is currently in use",
+            boundConnectionCount: bound.length,
+            canForceDelete: true,
+          },
+          { status: 409 }
+        );
+      }
+
+      for (const connection of bound) {
+        const providerSpecificData = detachProxyPoolFromProviderData(connection.providerSpecificData, id);
+        await updateProviderConnection(connection.id, { providerSpecificData });
+      }
+
+      // Free/no-auth providers pick their pool from settings, not a connection.
+      try {
+        const settings = await getSettings();
+        const nextStrategies = detachProxyPoolFromStrategies(settings?.providerStrategies, id);
+        if (nextStrategies) await updateSettings({ providerStrategies: nextStrategies });
+      } catch (error) {
+        console.log("Error detaching proxy pool from settings:", error);
+      }
     }
 
     await deleteProxyPool(id);
-    return NextResponse.json({ success: true });
+    forgetPoolGeo(id);
+    forgetPoolFitness(id);
+
+    return NextResponse.json({ success: true, detachedConnections: bound.length });
   } catch (error) {
     console.log("Error deleting proxy pool:", error);
     return NextResponse.json({ error: "Failed to delete proxy pool" }, { status: 500 });

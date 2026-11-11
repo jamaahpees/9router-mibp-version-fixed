@@ -158,7 +158,31 @@ export default function ProxyPoolsPage() {
 
           const data = await res.json();
           if (res.status === 409) {
-            notify.warning(`Cannot delete: ${data.boundConnectionCount || 0} connection(s) are still using this pool.`);
+            const bound = data.boundConnectionCount || 0;
+            // Second, explicit confirmation: the pool row goes away and every
+            // account bound to it is detached before the delete is applied.
+            setConfirmState({
+              title: "Pool masih dipakai",
+              message: `"${proxyPool.name}" dipakai ${bound} koneksi. Hapus pool dan lepaskan dari koneksi tersebut? Koneksi itu akan kembali memakai proxy tunggal atau koneksi langsung.`,
+              confirmText: "Hapus & lepaskan",
+              variant: "danger",
+              onConfirm: async () => {
+                setConfirmState(null);
+                try {
+                  const forced = await fetch(`/api/proxy-pools/${proxyPool.id}?force=1`, { method: "DELETE" });
+                  const forcedData = await forced.json().catch(() => ({}));
+                  if (!forced.ok) {
+                    notify.error(forcedData.error || "Failed to delete proxy pool");
+                    return;
+                  }
+                  setProxyPools((prev) => prev.filter((item) => item.id !== proxyPool.id));
+                  notify.success(`Pool dihapus, dilepas dari ${forcedData.detachedConnections || bound} koneksi`);
+                } catch (error) {
+                  console.log("Error force deleting proxy pool:", error);
+                  notify.error("Failed to delete proxy pool");
+                }
+              }
+            });
           } else {
             notify.error(data.error || "Failed to delete proxy pool");
           }
@@ -258,7 +282,11 @@ export default function ProxyPoolsPage() {
           }
           await fetchProxyPools();
           clearSelection();
-          notify.success(`Deleted ${ok}${blocked ? `, ${blocked} bound` : ""}${failed ? `, ${failed} failed` : ""}`);
+          if (blocked) {
+            notify.warning(`Deleted ${ok}${failed ? `, ${failed} failed` : ""}. ${blocked} pool masih terikat ke koneksi - hapus satu per satu untuk melepas ikatannya.`);
+          } else {
+            notify.success(`Deleted ${ok}${failed ? `, ${failed} failed` : ""}`);
+          }
         } finally {
           setBulkBusy(false);
         }
