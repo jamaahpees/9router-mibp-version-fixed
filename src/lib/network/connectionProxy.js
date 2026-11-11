@@ -103,6 +103,12 @@ export async function resolveConnectionProxyConfig(
     const multiPoolScope = providerSpecificData?.proxyPoolScope || null;
     let selectedPoolId = null;
 
+    // A strict pool must keep its guarantee even when the pool itself is not
+    // usable (inactive, or saved without a url). Otherwise the unusable-pool
+    // path below reports strictProxy:false and the request silently leaves
+    // over the direct IP — the leak strict mode exists to prevent (#4333).
+    let poolStrictProxy = false;
+
     /**
      * -----------------------------
      * Multi-Proxy Pool Resolution (NEW)
@@ -179,8 +185,14 @@ export async function resolveConnectionProxyConfig(
       const noProxy = normalizeString(proxyPool?.noProxy);
       const isValidPool = proxyPool && proxyPool.isActive === true && proxyUrl;
 
+      poolStrictProxy = proxyPool?.strictProxy === true;
+
       if (isValidPool) {
-        if (proxyPool.type === "vercel" || proxyPool.type === "cloudflare" || proxyPool.type === "deno") {
+        /**
+         * Vercel/Cloudflare/Deno/Netlify relay proxies use base URL rewriting
+         * instead of HTTP_PROXY environment variables.
+         */
+        if (proxyPool.type === "vercel" || proxyPool.type === "cloudflare" || proxyPool.type === "deno" || proxyPool.type === "netlify") {
           return {
             source: proxyPool.type,
             proxyPoolId: proxyPoolIdRaw,
@@ -220,6 +232,8 @@ export async function resolveConnectionProxyConfig(
         proxyPoolId: proxyPoolIdRaw || null,
         proxyPool: null,
 
+        strictProxy: poolStrictProxy,
+
         ...legacy,
       };
     }
@@ -234,6 +248,8 @@ export async function resolveConnectionProxyConfig(
 
       proxyPoolId: proxyPoolIdRaw || null,
       proxyPool: null,
+
+      strictProxy: poolStrictProxy,
 
       ...legacy,
     };

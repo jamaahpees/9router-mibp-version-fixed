@@ -68,6 +68,21 @@ describe("Antigravity Claude 5.5 models (#4555, #4548)", () => {
     });
   });
 
+  it("includes Claude 5.5 models in Antigravity MITM configuration", () => {
+    const ag = MITM_TOOLS.antigravity;
+    expect(ag.modelAliases).toContain("claude-sonnet-5-5");
+    expect(ag.modelAliases).toContain("claude-opus-5-5");
+    expect(ag.modelAliases).not.toContain("claude-opus-5-5-thinking");
+
+    const sonnet = ag.defaultModels.find((m) => m.id === "claude-sonnet-5-5");
+    expect(sonnet).toBeTruthy();
+    expect(sonnet.alias).toBe("claude-sonnet-5-5");
+
+    const opus = ag.defaultModels.find((m) => m.id === "claude-opus-5-5");
+    expect(opus).toBeTruthy();
+    expect(opus.alias).toBe("claude-opus-5-5");
+  });
+
   it("normalizes dotted and dashed model names via MITM synonyms", () => {
     const synonyms = MODEL_SYNONYMS.antigravity;
     expect(synonyms["claude-sonnet-5.5"]).toBe("claude-sonnet-5-5");

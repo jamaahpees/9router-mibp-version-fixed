@@ -19,8 +19,8 @@ function groupModels(overrides = {}) {
     isOpenAICompatibleProvider, isAnthropicCompatibleProvider,
     PROVIDER_ORDER: Object.keys(allProviders),
     NO_AUTH_PROVIDER_IDS: Object.keys(FREE_PROVIDERS).filter((id) => FREE_PROVIDERS[id].noAuth),
-    filteredActiveProviders: [], activeProviders: [], modelAliases: {}, providerNodes: [],
-    customModels: [], disabledModels: {}, kindFilter: null, cursorModels: [], ...overrides,
+    filteredActiveProviders: [], activeProviders: [], effectiveConnections: [], modelAliases: {}, providerNodes: [],
+    customModels: [], disabledModels: {}, kindFilter: null, cursorModels: [], deactivatedProviderIds: new Set(), ...overrides,
   });
 }
 const nodeIds = ["openai-compatible-chat-test", "anthropic-compatible-test"];

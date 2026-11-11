@@ -32,8 +32,10 @@ describe("OpenCode 2.0 free-tier fingerprint", () => {
         "nemotron-3.5-super-vl-free",
       ])
     );
-    expect(ids).not.toContain("muse-spark-1.2-contributor-free");
-    expect(ids).not.toContain("muse-spark-1.3-contributor-free");
+    // Upstream restored the Muse Spark free ids on the Responses wire; the fork
+    // keeps them alongside its own /inference/v1 free catalog.
+    expect(ids).toContain("muse-spark-1.2-contributor-free");
+    expect(ids).toContain("muse-spark-1.3-contributor-free");
     expect(opencode.modelsFetcher.url).toBe("https://opencode.ai/inference/v1/models");
   });
 

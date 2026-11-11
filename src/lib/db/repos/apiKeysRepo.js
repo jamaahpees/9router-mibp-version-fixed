@@ -1,5 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
+import { keyAccessFromColumns, keyAccessToColumns } from "@/shared/utils/keyAccess.js";
+import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
 
 function rowToKey(row) {
   if (!row) return null;
@@ -12,6 +14,7 @@ function rowToKey(row) {
     createdAt: row.createdAt,
     usageLimit: row.usageLimit ?? null,
     usagePeriod: row.usagePeriod ?? "all",
+    access: keyAccessFromColumns(row.accessRestricted, row.accessAllow),
   };
 }
 
@@ -40,6 +43,14 @@ export async function getApiKeyById(id) {
   return rowToKey(row);
 }
 
+// Used by the /v1 handlers to read the presented key's access settings.
+export async function getApiKeyByKey(key) {
+  if (!key) return null;
+  const db = await getAdapter();
+  const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]);
+  return rowToKey(row);
+}
+
 export async function createApiKey(name, machineId, usageLimit = null, usagePeriod = "all") {
   if (!machineId) throw new Error("machineId is required");
   const db = await getAdapter();
@@ -54,10 +65,12 @@ export async function createApiKey(name, machineId, usageLimit = null, usagePeri
     createdAt: new Date().toISOString(),
     usageLimit: usageLimit !== null && usageLimit !== undefined && usageLimit !== "" ? parseInt(usageLimit, 10) : null,
     usagePeriod: usagePeriod || "all",
+    access: { restricted: false, allow: [] },
   };
+  const cols = keyAccessToColumns(KEY_ACCESS_UNRESTRICTED);
   db.run(
-    `INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt, usageLimit, usagePeriod) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-    [apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt, apiKey.usageLimit, apiKey.usagePeriod]
+    `INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt, usageLimit, usagePeriod, accessRestricted, accessAllow) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt, apiKey.usageLimit, apiKey.usagePeriod, cols.accessRestricted, cols.accessAllow]
   );
   return apiKey;
 }
@@ -74,11 +87,12 @@ export async function updateApiKey(id, data) {
     } else {
       merged.usageLimit = null;
     }
+    const cols = keyAccessToColumns(merged.access);
     db.run(
-      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, usageLimit = ?, usagePeriod = ? WHERE id = ?`,
-      [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, merged.usageLimit, merged.usagePeriod || "all", id]
+      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, usageLimit = ?, usagePeriod = ?, accessRestricted = ?, accessAllow = ? WHERE id = ?`,
+      [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, merged.usageLimit, merged.usagePeriod || "all", cols.accessRestricted, cols.accessAllow, id]
     );
-    result = merged;
+    result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
   });
   return result;
 }
