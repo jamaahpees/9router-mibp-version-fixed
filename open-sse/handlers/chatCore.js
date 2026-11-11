@@ -9,6 +9,7 @@ import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
+import { localTerminationResult } from "../utils/requestBudget.js";
 import { upstreamResponseHeaders } from "../utils/upstreamHeaders.js";
 import { HTTP_STATUS, TOKEN_SAVER_HEADER } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
@@ -375,6 +376,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     onError: (error) => finishPending(error?.status === 504 || error?.name === "TimeoutError" ? "timeout" : error?.name === "AbortError" ? "aborted" : "error"),
     log, provider, model, reqTag
   });
+
+  // Caller went away or the budget expired: abort the upstream stream and
+  // record the terminal lifecycle status before unwinding.
+  const abortOwned = () => {
+    streamController.abort?.();
+    finishPending(requestContext?.signal?.reason?.name === "TimeoutError" ? "timeout" : "aborted");
+  };
 
   requestContext?.signal?.addEventListener("abort", abortOwned, { once: true });
   detachSignal = () => requestContext?.signal?.removeEventListener("abort", abortOwned);

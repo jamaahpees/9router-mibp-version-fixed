@@ -593,6 +593,9 @@ export class GeminiWebExecutor extends BaseExecutor {
       // and those bodies can't be re-read via CDP once the stream completes.
       const baseReply = await readReplyState(page);
 
+      // Tool-call mode: the caller supplied tools, so capture the reply text and
+      // turn it into an OpenAI-style tool_calls response instead of plain text.
+      const hasTools = Array.isArray(body?.tools) && body.tools.length > 0;
       if (hasTools) {
         const responseText = await waitForGeminiReply({
           page,
