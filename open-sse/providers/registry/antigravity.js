@@ -50,6 +50,15 @@ export default {
     { id: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)", upstreamModelId: "gemini-3.8-flash-medium(medium)" },
     { id: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)", upstreamModelId: "gemini-3.8-flash-low(low)" },
     { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", upstreamModelId: "gemini-3.8-flash-medium(medium)" },
+    // Verified live (15 Nov 2026) on every active account: these ids answer 200
+    // through v1internal:generateContent. gemini-2.5-pro is listed upstream but
+    // answered 503 "No capacity available", so it stays out until it serves.
+    { id: "gemini-3-flash", name: "Gemini 3 Flash" },
+    { id: "gemini-3.5-flash-lite", name: "Gemini 3.5 Flash Lite" },
+    { id: "gemini-3.1-flash-lite", name: "Gemini 3.1 Flash Lite" },
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite" },
+    { id: "gemini-2.5-flash-thinking", name: "Gemini 2.5 Flash Thinking" },
     { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)" },
     { id: "claude-opus-4-6-thinking", name: "Claude Opus 4.6 (Thinking)" },
     { id: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
