@@ -640,6 +640,16 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     finishPending("error");
     const { statusCode, message, resetsAtMs } = parsedError;
+
+    // Google blocks the whole account (not just the model) on a Terms-of-Service
+    // violation, so quarantine it before the next retry picks it again.
+    if (provider === "antigravity" && statusCode === 403 && /TOS_VIOLATION|violation of Terms of Service/i.test(String(message || ""))) {
+      try {
+        const { quarantineAntigravityTos } = await import("@/sse/services/antigravityQuota.js");
+        await quarantineAntigravityTos(connectionId, String(message || ""));
+      } catch { /* quarantine is best effort */ }
+    }
+
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,

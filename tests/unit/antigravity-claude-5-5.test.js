@@ -10,39 +10,22 @@ const require = createRequire(import.meta.url);
 const { MODEL_SYNONYMS, MODEL_PATTERNS } = require("../../src/mitm/config.js");
 
 describe("Antigravity Claude 5.5 models (#4555, #4548)", () => {
-  it("includes Claude 5.5 models in Antigravity provider registry", () => {
-    const agModels = getModelsByProviderId("ag");
-    const ids = agModels.map((m) => m.id);
+  it("stops advertising Claude 5.5 on ag: the backend answers 404 for it", () => {
+    // Live probe (14 Nov 2026): every active Antigravity account returns
+    // 404 "Requested entity was not found" for claude-sonnet/opus-5-5, and the
+    // account catalog lists only claude-sonnet-4-6 / claude-opus-4-6-thinking.
+    const ids = getModelsByProviderId("ag").map((m) => m.id);
 
-    expect(ids).toContain("claude-sonnet-5-5-high");
-    expect(ids).toContain("claude-sonnet-5-5-medium");
-    expect(ids).toContain("claude-sonnet-5-5-low");
-    expect(ids).toContain("claude-sonnet-5-5");
-    expect(ids).not.toContain("claude-sonnet-5-5-thinking");
-    expect(ids).not.toContain("claude-opus-5-5-thinking");
-    expect(ids).toContain("claude-opus-5-5-high");
-    expect(ids).toContain("claude-opus-5-5-medium");
-    expect(ids).toContain("claude-opus-5-5-low");
-    expect(ids).toContain("claude-opus-5-5");
-
-    const sonnet = agModels.find((m) => m.id === "claude-sonnet-5-5");
-    expect(sonnet?.upstreamModelId).toBe("claude-sonnet-5-5-high(high)");
-    const opus = agModels.find((m) => m.id === "claude-opus-5-5");
-    expect(opus?.upstreamModelId).toBe("claude-opus-5-5-high(high)");
+    expect(ids.filter((id) => id.startsWith("claude-sonnet-5-5"))).toEqual([]);
+    expect(ids.filter((id) => id.startsWith("claude-opus-5-5"))).toEqual([]);
+    expect(ids).toContain("claude-sonnet-4-6");
+    expect(ids).toContain("claude-opus-4-6-thinking");
   });
 
   it("resolves upstream model ID with thinking stripped for Google Cloud Code API", () => {
-    const upstreamSonnet = getModelUpstreamId("ag", "claude-sonnet-5-5");
-    expect(upstreamSonnet).toBe("claude-sonnet-5-5-high(high)");
-    expect(stripThinkingSuffix(upstreamSonnet)).toBe("claude-sonnet-5-5-high");
-
-    const upstreamOpus = getModelUpstreamId("ag", "claude-opus-5-5");
-    expect(upstreamOpus).toBe("claude-opus-5-5-high(high)");
-    expect(stripThinkingSuffix(upstreamOpus)).toBe("claude-opus-5-5-high");
-
-    const upstreamHigh = getModelUpstreamId("ag", "claude-sonnet-5-5-high");
-    expect(upstreamHigh).toBe("claude-sonnet-5-5-high(high)");
-    expect(stripThinkingSuffix(upstreamHigh)).toBe("claude-sonnet-5-5-high");
+    const upstream = getModelUpstreamId("ag", "gemini-3.8-flash-high");
+    expect(upstream).toBe("gemini-3.8-flash-high(high)");
+    expect(stripThinkingSuffix(upstream)).toBe("gemini-3.8-flash-high");
   });
 
   it("resolves capabilities for Claude 5.5 models", () => {

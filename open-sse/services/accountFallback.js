@@ -31,6 +31,13 @@ export function checkFallbackError(status, errorText, backoffLevel = 0, provider
     ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
     : "";
 
+  // A 404 that names an unknown entity ("Requested entity was not found") is a
+  // catalog mismatch, not a credential problem: falling back would sweep every
+  // account in the pool and lock each one for a model that does not exist.
+  if (status === 404 && lowerError.includes("requested entity was not found")) {
+    return { shouldFallback: false, cooldownMs: 0, requestScoped: true };
+  }
+
   for (const rule of ERROR_RULES) {
     if (rule.provider && rule.provider !== provider) continue;
     // Text-based rule: match substring in error message

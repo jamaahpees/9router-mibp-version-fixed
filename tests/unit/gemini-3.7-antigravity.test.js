@@ -5,12 +5,11 @@ import geminiRegistry from "../../open-sse/providers/registry/gemini.js";
 import { MODEL_PRICING } from "../../open-sse/providers/pricing.js";
 
 describe("Gemini 3.7 Flash Support & Config (#3286, #3281)", () => {
-  it("registers gemini-3.7-flash tiered models in antigravity provider registry", () => {
+  it("does not register gemini-3.7 on antigravity: the backend no longer serves it", () => {
+    // Live probe (14 Nov 2026): fetchAvailableModels exposes the 3.8 tier only;
+    // 3.7 requests answer 404 "Requested entity was not found" on every account.
     const agIds = antigravityRegistry.models.map(m => m.id);
-    expect(agIds).toContain("gemini-3.7-flash-high");
-    expect(agIds).toContain("gemini-3.7-flash-medium");
-    expect(agIds).toContain("gemini-3.7-flash-low");
-    expect(agIds).not.toContain("gemini-3.7-flash");
+    expect(agIds.filter((id) => id.startsWith("gemini-3.7"))).toEqual([]);
   });
 
   it("registers gemini-3.7-flash in gemini provider registry", () => {

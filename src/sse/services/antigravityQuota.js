@@ -194,6 +194,39 @@ export function clearAntigravityStrikes(connectionId, model) {
 /**
  * Get the quota cache (read-only reference for auth.js pre-filter).
  */
+/**
+ * Proactive refresh used by the quota-aware rotation path.
+ * Delegates to refreshAntigravityQuota(), which coalesces concurrent calls and
+ * enforces MIN_REFRESH_INTERVAL_MS per connection, so a selection pass cannot
+ * amplify quota requests.
+ */
+export async function ensureAntigravityQuotaFresh(connectionId, accessToken, providerSpecificData) {
+  if (!connectionId || !accessToken) return quotaCache.get(connectionId) || null;
+  return refreshAntigravityQuota(connectionId, accessToken, providerSpecificData);
+}
+
+/**
+ * Google reports a Terms-of-Service block as 403 with reason TOS_VIOLATION.
+ * That blocks every model on the account, so disable the connection instead of
+ * letting rotation keep picking it. Re-enable manually after a successful appeal.
+ */
+export async function quarantineAntigravityTos(connectionId, message = "") {
+  if (!connectionId) return false;
+  if (!/TOS_VIOLATION|violation of Terms of Service/i.test(String(message))) return false;
+  try {
+    const { updateProviderConnection } = await import("@/lib/localDb");
+    await updateProviderConnection(connectionId, {
+      isActive: false,
+      lastError: "TOS_VIOLATION: service disabled by upstream",
+      lastErrorAt: new Date().toISOString(),
+    });
+    log.warn("AG_BAN", connectionId.slice(0, 8) + " | TOS_VIOLATION - account disabled for rotation");
+    return true;
+  } catch (e) {
+    log.warn("AG_BAN", connectionId.slice(0, 8) + " | quarantine failed: " + e.message);
+    return false;
+  }
+}
 export function getAntigravityQuotaCache() {
   return quotaCache;
 }

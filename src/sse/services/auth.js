@@ -106,7 +106,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     // Filter out model-locked, excluded, and quota-exhausted connections.
     const now = Date.now();
-    const availableConnections = connections.filter(c => {
+    let availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
       const enabled = c.providerSpecificData?.enabledModels;
@@ -175,8 +175,41 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
+
+    // Quota-aware ranking: prefer the account with the most remaining quota for
+    // this model instead of spreading requests across accounts.
+    const quotaAware = providerOverride.quotaAware ?? settings.quotaAware ?? isAntigravity;
+    if (quotaAware && availableConnections.length > 1) {
+      try {
+        const { rankAntigravityConnections } = await import("./accountQuotaRanker.js");
+        const rankedResult = await rankAntigravityConnections({
+          connections: availableConnections,
+          model,
+          preferredConnectionId,
+          switchBelowPct: providerOverride.switchBelowPct ?? settings.switchBelowPct ?? 15,
+          preferPaid: providerOverride.preferPaid ?? settings.preferPaid ?? true,
+          log,
+        });
+        if (rankedResult.ranked.length > 0) {
+          availableConnections = rankedResult.ranked;
+        } else if (rankedResult.retryAfter) {
+          const retryAfter = rankedResult.retryAfter;
+          log.warn("AUTH", provider + " | all " + connections.length + " accounts exhausted for " + (model || "all") + " (" + formatRetryAfter(retryAfter) + ")");
+          return {
+            allRateLimited: true,
+            retryAfter,
+            retryAfterHuman: formatRetryAfter(retryAfter),
+            lastError: "All accounts exhausted for this model",
+            lastErrorCode: null,
+          };
+        }
+      } catch (e) {
+        log.warn("AG_QUOTA", "quota ranking failed, keeping default order: " + e.message);
+      }
+    }
+
     // Per-provider strategy overrides global setting
-    const strategy = providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first";
+    const strategy = quotaAware ? "fill-first" : (providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first");
 
     let connection;
     // Pin to preferred connection if specified and available
