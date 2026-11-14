@@ -378,7 +378,7 @@ exports[`GOLDEN buildHeaders (default executor providers) > claude → headers (
     "Anthropic-Dangerous-Direct-Browser-Access": "true",
     "Anthropic-Version": "2023-06-01",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.280 (external, sdk-cli)",
+    "User-Agent": "claude-cli/2.1.322 (external, sdk-cli)",
     "X-App": "cli",
     "X-Stainless-Arch": "arm64",
     "X-Stainless-Helper-Method": "stream",
@@ -396,7 +396,7 @@ exports[`GOLDEN buildHeaders (default executor providers) > claude → headers (
     "Anthropic-Dangerous-Direct-Browser-Access": "true",
     "Anthropic-Version": "2023-06-01",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.280 (external, sdk-cli)",
+    "User-Agent": "claude-cli/2.1.322 (external, sdk-cli)",
     "X-App": "cli",
     "X-Stainless-Arch": "arm64",
     "X-Stainless-Helper-Method": "stream",
@@ -416,7 +416,7 @@ exports[`GOLDEN buildHeaders (default executor providers) > claude → headers (
     "Anthropic-Version": "2023-06-01",
     "Authorization": "Bearer <TOK>",
     "Content-Type": "application/json",
-    "User-Agent": "claude-cli/2.1.280 (external, sdk-cli)",
+    "User-Agent": "claude-cli/2.1.322 (external, sdk-cli)",
     "X-App": "cli",
     "X-Stainless-Arch": "arm64",
     "X-Stainless-Helper-Method": "stream",
@@ -549,13 +549,13 @@ exports[`GOLDEN buildHeaders (default executor providers) > codebuddy-cn → hea
     "Authorization": "Bearer <TOK>",
     "Content-Type": "application/json",
     "User-Agent": "CLI/2.108.1 CodeBuddy/2.108.1",
-    "X-Conversation-ID": "7976a939-f731-4e55-903c-f05329f0b574",
-    "X-Conversation-Message-ID": "a851cbef-407d-4d27-9826-521fa5a6ec67",
-    "X-Conversation-Request-ID": "a851cbef-407d-4d27-9826-521fa5a6ec67",
+    "X-Conversation-ID": "4c24e581-4ee4-44f3-b578-4b978541f4bc",
+    "X-Conversation-Message-ID": "5ec243a2-f18d-404b-a192-1dd940499c73",
+    "X-Conversation-Request-ID": "5ec243a2-f18d-404b-a192-1dd940499c73",
     "X-IDE-Name": "CLI",
     "X-IDE-Type": "CLI",
     "X-Product": "SaaS",
-    "X-Request-ID": "a851cbef-407d-4d27-9826-521fa5a6ec67",
+    "X-Request-ID": "5ec243a2-f18d-404b-a192-1dd940499c73",
     "x-codebuddy-request": "1",
     "x-requested-with": "XMLHttpRequest",
   },
@@ -563,13 +563,13 @@ exports[`GOLDEN buildHeaders (default executor providers) > codebuddy-cn → hea
     "Authorization": "Bearer <TOK>",
     "Content-Type": "application/json",
     "User-Agent": "CLI/2.108.1 CodeBuddy/2.108.1",
-    "X-Conversation-ID": "6dabb6a3-7a1b-46e8-a4ac-3c7ecd8290fb",
-    "X-Conversation-Message-ID": "7c013706-ebe1-4065-bbed-d3ca4851e9b8",
-    "X-Conversation-Request-ID": "7c013706-ebe1-4065-bbed-d3ca4851e9b8",
+    "X-Conversation-ID": "dc56a9a5-f33a-4280-b30a-697ce92f12e4",
+    "X-Conversation-Message-ID": "f16cea56-c394-40a8-997a-b63695f333b5",
+    "X-Conversation-Request-ID": "f16cea56-c394-40a8-997a-b63695f333b5",
     "X-IDE-Name": "CLI",
     "X-IDE-Type": "CLI",
     "X-Product": "SaaS",
-    "X-Request-ID": "7c013706-ebe1-4065-bbed-d3ca4851e9b8",
+    "X-Request-ID": "f16cea56-c394-40a8-997a-b63695f333b5",
     "x-codebuddy-request": "1",
     "x-requested-with": "XMLHttpRequest",
   },
@@ -578,13 +578,13 @@ exports[`GOLDEN buildHeaders (default executor providers) > codebuddy-cn → hea
     "Authorization": "Bearer <TOK>",
     "Content-Type": "application/json",
     "User-Agent": "CLI/2.108.1 CodeBuddy/2.108.1",
-    "X-Conversation-ID": "19b6aaf1-f625-4d2d-8c0d-bd79ca7a633b",
-    "X-Conversation-Message-ID": "8b9bee74-d1ab-41d9-88b0-43979c7a5348",
-    "X-Conversation-Request-ID": "8b9bee74-d1ab-41d9-88b0-43979c7a5348",
+    "X-Conversation-ID": "64e591f5-42cd-4d14-a6b0-3156488586f7",
+    "X-Conversation-Message-ID": "c61a68a9-74a3-4e72-9a65-1e166afe6aa1",
+    "X-Conversation-Request-ID": "c61a68a9-74a3-4e72-9a65-1e166afe6aa1",
     "X-IDE-Name": "CLI",
     "X-IDE-Type": "CLI",
     "X-Product": "SaaS",
-    "X-Request-ID": "8b9bee74-d1ab-41d9-88b0-43979c7a5348",
+    "X-Request-ID": "c61a68a9-74a3-4e72-9a65-1e166afe6aa1",
     "x-codebuddy-request": "1",
     "x-requested-with": "XMLHttpRequest",
   },
@@ -598,13 +598,13 @@ exports[`GOLDEN buildHeaders (default executor providers) > codebuddy-intl → h
     "Authorization": "Bearer <TOK>",
     "Content-Type": "application/json",
     "User-Agent": "IDE/2.108.1 CodeBuddy/2.108.1",
-    "X-Conversation-ID": "fac55de3-ad47-4f4b-bf4b-436314658cb6",
-    "X-Conversation-Message-ID": "cf5ac77b-3d24-4ab1-b296-5a3daff78b18",
-    "X-Conversation-Request-ID": "cf5ac77b-3d24-4ab1-b296-5a3daff78b18",
+    "X-Conversation-ID": "94d250ee-7809-4ce9-a93d-253743d9b965",
+    "X-Conversation-Message-ID": "81727f13-78b9-470f-bc59-00936a6d900d",
+    "X-Conversation-Request-ID": "81727f13-78b9-470f-bc59-00936a6d900d",
     "X-IDE-Name": "IDE",
     "X-IDE-Type": "IDE",
     "X-Product": "SaaS",
-    "X-Request-ID": "cf5ac77b-3d24-4ab1-b296-5a3daff78b18",
+    "X-Request-ID": "81727f13-78b9-470f-bc59-00936a6d900d",
     "x-codebuddy-request": "1",
     "x-requested-with": "XMLHttpRequest",
   },
@@ -612,13 +612,13 @@ exports[`GOLDEN buildHeaders (default executor providers) > codebuddy-intl → h
     "Authorization": "Bearer <TOK>",
     "Content-Type": "application/json",
     "User-Agent": "IDE/2.108.1 CodeBuddy/2.108.1",
-    "X-Conversation-ID": "2ab3086f-ceea-4a74-aedd-aa5772e1210f",
-    "X-Conversation-Message-ID": "7d3b52fe-95c8-4c70-bf3d-d0f97a62638c",
-    "X-Conversation-Request-ID": "7d3b52fe-95c8-4c70-bf3d-d0f97a62638c",
+    "X-Conversation-ID": "d5eb3b37-9084-45a3-82e2-a95360b183ae",
+    "X-Conversation-Message-ID": "53773732-8690-41fa-93ce-4f631ed33f79",
+    "X-Conversation-Request-ID": "53773732-8690-41fa-93ce-4f631ed33f79",
     "X-IDE-Name": "IDE",
     "X-IDE-Type": "IDE",
     "X-Product": "SaaS",
-    "X-Request-ID": "7d3b52fe-95c8-4c70-bf3d-d0f97a62638c",
+    "X-Request-ID": "53773732-8690-41fa-93ce-4f631ed33f79",
     "x-codebuddy-request": "1",
     "x-requested-with": "XMLHttpRequest",
   },
@@ -627,13 +627,13 @@ exports[`GOLDEN buildHeaders (default executor providers) > codebuddy-intl → h
     "Authorization": "Bearer <TOK>",
     "Content-Type": "application/json",
     "User-Agent": "IDE/2.108.1 CodeBuddy/2.108.1",
-    "X-Conversation-ID": "f907d30a-ed00-4dd3-915b-6653d94d53fd",
-    "X-Conversation-Message-ID": "01b8dd3c-ae4c-4447-ae70-601e136f4f51",
-    "X-Conversation-Request-ID": "01b8dd3c-ae4c-4447-ae70-601e136f4f51",
+    "X-Conversation-ID": "d7858074-0a59-41ea-b38e-d21163a91764",
+    "X-Conversation-Message-ID": "260b8f60-b790-4965-97c0-ce0892785c14",
+    "X-Conversation-Request-ID": "260b8f60-b790-4965-97c0-ce0892785c14",
     "X-IDE-Name": "IDE",
     "X-IDE-Type": "IDE",
     "X-Product": "SaaS",
-    "X-Request-ID": "01b8dd3c-ae4c-4447-ae70-601e136f4f51",
+    "X-Request-ID": "260b8f60-b790-4965-97c0-ce0892785c14",
     "x-codebuddy-request": "1",
     "x-requested-with": "XMLHttpRequest",
   },
@@ -1592,7 +1592,45 @@ exports[`GOLDEN buildHeaders (default executor providers) > sensenova → header
 }
 `;
 
+exports[`GOLDEN buildHeaders (default executor providers) > sensenova-intl → headers (apiKey / oauth) 1`] = `
+{
+  "apiKey": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "nonStream": {
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "oauth": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+}
+`;
+
 exports[`GOLDEN buildHeaders (default executor providers) > siliconflow → headers (apiKey / oauth) 1`] = `
+{
+  "apiKey": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "nonStream": {
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "oauth": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+}
+`;
+
+exports[`GOLDEN buildHeaders (default executor providers) > synthetic → headers (apiKey / oauth) 1`] = `
 {
   "apiKey": {
     "Accept": "text/event-stream",
@@ -2320,10 +2358,24 @@ exports[`GOLDEN buildUrl (default executor providers) > sensenova → url (strea
 }
 `;
 
+exports[`GOLDEN buildUrl (default executor providers) > sensenova-intl → url (stream + non-stream) 1`] = `
+{
+  "nonStream": "https://token.sensenova.ai/v1/chat/completions",
+  "stream": "https://token.sensenova.ai/v1/chat/completions",
+}
+`;
+
 exports[`GOLDEN buildUrl (default executor providers) > siliconflow → url (stream + non-stream) 1`] = `
 {
   "nonStream": "https://api.siliconflow.com/v1/chat/completions",
   "stream": "https://api.siliconflow.com/v1/chat/completions",
+}
+`;
+
+exports[`GOLDEN buildUrl (default executor providers) > synthetic → url (stream + non-stream) 1`] = `
+{
+  "nonStream": "https://api.synthetic.new/openai/v1/chat/completions",
+  "stream": "https://api.synthetic.new/openai/v1/chat/completions",
 }
 `;
 
