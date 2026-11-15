@@ -1,10 +1,22 @@
 import { NextResponse } from "next/server";
 import { getCombos, createCombo, getComboByName } from "@/lib/localDb";
+import { cleanComboModels, comboMapFromRows } from "@/shared/utils/comboGraph.js";
 
 export const dynamic = "force-dynamic";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
+
+// A combo that reaches itself expands forever at request time, so reject it
+// before it reaches the DB instead of trusting the picker to be careful.
+function cycleError(name, removed) {
+  const blocked = removed.filter((r) => r.reason === "self-reference" || r.reason === "cycle");
+  if (blocked.length === 0) return null;
+  const message = blocked.some((r) => r.reason === "self-reference")
+    ? `Combo "${name}" cannot list itself as a model`
+    : `Combo "${name}" would form a cycle through "${blocked[0].model}"`;
+  return NextResponse.json({ error: message, blocked }, { status: 400 });
+}
 
 // GET /api/combos - Get all combos
 export async function GET() {
@@ -38,7 +50,11 @@ export async function POST(request) {
       return NextResponse.json({ error: "Combo name already exists" }, { status: 400 });
     }
 
-    const combo = await createCombo({ name, models: models || [], kind: kind || null });
+    const { models: cleanedModels, removed } = cleanComboModels(name, models, comboMapFromRows(await getCombos()));
+    const blocked = cycleError(name, removed);
+    if (blocked) return blocked;
+
+    const combo = await createCombo({ name, models: cleanedModels, kind: kind || null });
 
     return NextResponse.json(combo, { status: 201 });
   } catch (error) {

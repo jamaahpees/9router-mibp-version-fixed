@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { getComboById, updateCombo, deleteCombo, getComboByName, getSettings, updateSettings } from "@/lib/localDb";
+import { getComboById, updateCombo, deleteCombo, getComboByName, getCombos, getSettings, updateSettings } from "@/lib/localDb";
 import { resetComboRotation } from "open-sse/services/combo.js";
+import { cleanComboModels, comboMapFromRows } from "@/shared/utils/comboGraph.js";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
@@ -43,6 +44,23 @@ export async function PUT(request, { params }) {
     
     // Capture previous name to invalidate rotation state on rename
     const prev = await getComboById(id);
+
+    // Reject self-reference / cycles before writing; a cyclic combo expands
+    // forever at request time and takes the process down with it.
+    if (Array.isArray(body.models)) {
+      const others = (await getCombos()).filter((c) => c.id !== id);
+      const targetName = body.name || prev?.name;
+      const { models: cleanedModels, removed } = cleanComboModels(targetName, body.models, comboMapFromRows(others));
+      const blocked = removed.filter((r) => r.reason === "self-reference" || r.reason === "cycle");
+      if (blocked.length > 0) {
+        const message = blocked.some((r) => r.reason === "self-reference")
+          ? `Combo "${targetName}" cannot list itself as a model`
+          : `Combo "${targetName}" would form a cycle through "${blocked[0].model}"`;
+        return NextResponse.json({ error: message, blocked }, { status: 400 });
+      }
+      body.models = cleanedModels;
+    }
+
     const combo = await updateCombo(id, body);
     
     if (!combo) {

@@ -88,7 +88,10 @@ export async function getComboModels(modelStr) {
 
   const combo = await getComboByName(modelStr);
   if (combo && combo.models && combo.models.length > 0) {
-    return combo.models;
+    // Never hand back the combo itself as a member: that expands forever. Rows
+    // written before the save-time guard can still carry it.
+    const members = combo.models.filter((model) => model !== modelStr);
+    return members.length > 0 ? members : null;
   }
   return null;
 }

@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { cleanComboModels, comboMapFromRows } from "../../../shared/utils/comboGraph.js";
 
 function rowToCombo(row) {
   if (!row) return null;
@@ -35,11 +36,17 @@ export async function getComboByName(name) {
 export async function createCombo(data) {
   const db = await getAdapter();
   const now = new Date().toISOString();
+  // Strip self-references/cycles here too: the API validates, but imports and
+  // presets write through the repo directly.
+  const { models, removed } = cleanComboModels(data.name, data.models || [], comboMapFromRows(db.all(`SELECT * FROM combos`)));
+  if (removed.length > 0) {
+    console.warn(`[combosRepo] model(s) dropped from combo "${data.name}":`, removed.map((r) => `${r.model} (${r.reason})`).join(", "));
+  }
   const combo = {
     id: uuidv4(),
     name: data.name,
     kind: data.kind || null,
-    models: data.models || [],
+    models,
     createdAt: now,
     updatedAt: now,
   };
@@ -57,6 +64,14 @@ export async function updateCombo(id, data) {
     const row = db.get(`SELECT * FROM combos WHERE id = ?`, [id]);
     if (!row) return;
     const merged = { ...rowToCombo(row), ...data, updatedAt: new Date().toISOString() };
+    if (Array.isArray(merged.models)) {
+      const others = db.all(`SELECT * FROM combos WHERE id != ?`, [id]);
+      const { models, removed } = cleanComboModels(merged.name, merged.models, comboMapFromRows(others));
+      if (removed.length > 0) {
+        console.warn(`[combosRepo] model(s) dropped from combo "${merged.name}":`, removed.map((r) => `${r.model} (${r.reason})`).join(", "));
+      }
+      merged.models = models;
+    }
     db.run(
       `UPDATE combos SET name = ?, kind = ?, models = ?, updatedAt = ? WHERE id = ?`,
       [merged.name, merged.kind, stringifyJson(merged.models || []), merged.updatedAt, id]

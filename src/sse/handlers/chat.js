@@ -40,12 +40,40 @@ import { resolveSmartChoice } from "../services/systemoneRouter.js";
  */
 const requestContexts = new WeakMap();
 
+// Nested combos are a feature (a combo may list another combo as a member), so
+// cycles must be caught while expanding instead of banning nesting. A combo that
+// lists its own name re-enters itself forever: on 2026-11-15 `claude9-opus-5` did
+// exactly that, the process reached 2.1 GB RSS, swap thrashed and the dashboard
+// stopped answering.
+const MAX_COMBO_DEPTH = 4;
+
+function withComboGuard(request, name, fn) {
+  const context = request ? requestContexts.get(request) : null;
+  if (!context) return fn();
+  if (!Array.isArray(context.comboChain)) context.comboChain = [];
+  const chain = context.comboChain;
+  const path = [...chain, name].join(" -> ");
+  if (chain.includes(name)) {
+    log.warn("CHAT", `Combo cycle detected, refusing to expand: ${path}`);
+    return Promise.resolve(errorResponse(HTTP_STATUS.BAD_REQUEST, `Combo cycle detected: ${path}`));
+  }
+  if (chain.length >= MAX_COMBO_DEPTH) {
+    log.warn("CHAT", `Combo nesting too deep (limit ${MAX_COMBO_DEPTH}), refusing to expand: ${path}`);
+    return Promise.resolve(errorResponse(HTTP_STATUS.BAD_REQUEST, `Combo nesting too deep: ${path}`));
+  }
+  chain.push(name);
+  return Promise.resolve(fn()).finally(() => {
+    const index = chain.lastIndexOf(name);
+    if (index !== -1) chain.splice(index, 1);
+  });
+}
+
 export async function handleChat(request, clientRawRequest = null) {
   const arrivedAt = performance.now();
   const lifecycle = createRequestLifecycle({});
   const isClaudeEndpoint = new URL(request.url).pathname.endsWith("/messages");
   const budget = createRequestBudget({ signal: request.signal, deadlineAt: isClaudeEndpoint ? arrivedAt + CLAUDE_PRECOMMIT_TIMEOUT_MS : Infinity });
-  const context = { lifecycle, budget };
+  const context = { lifecycle, budget, comboChain: [] };
   requestContexts.set(request, context);
   const finish = (status) => { lifecycle.finish(status); budget.dispose(); };
   try {
@@ -173,7 +201,7 @@ async function handleChatRequest(request, clientRawRequest = null) {
 
     if (comboStrategy === "fusion") {
       log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
-      return handleFusionChat({
+      return withComboGuard(request, modelStr, () => handleFusionChat({
         body,
         models: comboModels,
         handleSingleModel: (b, m, isPanel) => {
@@ -188,13 +216,13 @@ async function handleChatRequest(request, clientRawRequest = null) {
         comboName: modelStr,
         judgeModel: comboStrategies[modelStr]?.judgeModel,
         tuning: comboStrategies[modelStr]?.fusionTuning,
-      });
+      }));
     }
 
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     const comboCfg = comboStrategies[modelStr] || {};
     log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
+    return withComboGuard(request, modelStr, () => handleComboChat({
       body,
       models: augmentedModels,
       handleSingleModel: withCapacityAdapterStripping(
@@ -220,7 +248,7 @@ async function handleChatRequest(request, clientRawRequest = null) {
         : null,
       signal: request?.signal,
       checkModelAvailability
-    });
+    }));
   }
 
   // Single model request — may still switch to a capacity-adapter model if the
@@ -270,7 +298,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
       if (comboStrategy === "fusion") {
         log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
-        return handleFusionChat({
+        return withComboGuard(request, modelStr, () => handleFusionChat({
           body,
           models: comboModels,
           handleSingleModel: (b, m, isPanel) => {
@@ -285,7 +313,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           comboName: modelStr,
           judgeModel: comboStrategies[modelStr]?.judgeModel,
           tuning: comboStrategies[modelStr]?.fusionTuning,
-        });
+        }));
       }
 
       const comboStickyLimit = chatSettings.comboStickyRoundRobinLimit;
@@ -293,7 +321,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const nestedSession = resolveSessionIdentity({ headers: clientRawRequest?.headers, body });
       const nestedSessionId = nestedSession?.sessionId || null;
       log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-      return handleComboChat({
+      return withComboGuard(request, modelStr, () => handleComboChat({
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
@@ -319,7 +347,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           : null,
         signal: request?.signal,
         checkModelAvailability
-      });
+      }));
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
