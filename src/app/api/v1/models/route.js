@@ -23,6 +23,7 @@ import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel, aggregateComboCapabilities } from "open-sse/providers/capabilities.js";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
+import { comboLimitOverride, applyComboLimits } from "@/shared/utils/comboGraph.js";
 
 // Qoder shares one live resolver across intl (qoder) and CN (qoder-cn); the
 // credentials carry the provider id so qoderModels picks the right region's
@@ -304,8 +305,12 @@ function comboSeatLimits(combo, combosByName, visiting = new Set()) {
         const nested = combosByName.get(seat);
         if (nested) {
           const nestedLimits = comboSeatLimits(nested, combosByName, visiting);
-          if (Number.isFinite(nestedLimits.contextWindow)) contextWindow = Math.min(contextWindow, nestedLimits.contextWindow);
-          if (Number.isFinite(nestedLimits.maxOutput)) maxOutput = Math.min(maxOutput, nestedLimits.maxOutput);
+          // A nested combo's own pinned limits win over what its seats imply.
+          const nestedOverride = comboLimitOverride(nested);
+          const nestedWindow = nestedOverride.contextWindow ?? nestedLimits.contextWindow;
+          const nestedOutput = nestedOverride.maxOutput ?? nestedLimits.maxOutput;
+          if (Number.isFinite(nestedWindow)) contextWindow = Math.min(contextWindow, nestedWindow);
+          if (Number.isFinite(nestedOutput)) maxOutput = Math.min(maxOutput, nestedOutput);
           continue;
         }
       }
@@ -320,6 +325,19 @@ function comboSeatLimits(combo, combosByName, visiting = new Set()) {
   return {
     contextWindow: Number.isFinite(contextWindow) ? contextWindow : undefined,
     maxOutput: Number.isFinite(maxOutput) ? maxOutput : undefined,
+  };
+}
+
+/**
+ * Limits a combo publishes: an explicit override on the row wins, otherwise the
+ * smallest window any seat can honour.
+ */
+function resolveComboLimits(combo, combosByName) {
+  const override = comboLimitOverride(combo);
+  const seatLimits = comboSeatLimits(combo, combosByName);
+  return {
+    contextWindow: override.contextWindow ?? seatLimits.contextWindow,
+    maxOutput: override.maxOutput ?? seatLimits.maxOutput,
   };
 }
 
@@ -406,13 +424,18 @@ export async function buildModelsList(kindFilter, options = {}) {
     if (combo.kind === "webSearch" || combo.kind === "webFetch") {
       entry.kind = combo.kind;
     } else {
-      const comboCaps = aggregateComboCapabilities(combo.models, comboByName, comboSeatCapabilities);
+      const comboLimits = resolveComboLimits(combo, combosByName);
+      const comboCaps = applyComboLimits(
+        aggregateComboCapabilities(combo.models, comboByName, comboSeatCapabilities),
+        comboLimits,
+      );
       if (comboCaps) entry.capabilities = comboCaps;
-      // Any seat can serve the request, so the only window a combo can promise is
-      // its smallest. Combo entries were the only models on this endpoint that
-      // published no limits at all, which leaves a client to guess from the name —
-      // and it guesses high (see the snake_case note on the per-provider path).
-      const { contextWindow, maxOutput } = comboSeatLimits(combo, combosByName);
+      // Any seat can serve the request, so by default the only window a combo can
+      // promise is its smallest — unless the operator pinned one on the combo row.
+      // Combo entries were the only models on this endpoint that published no
+      // limits at all, which leaves a client to guess from the name — and it
+      // guesses high (see the snake_case note on the per-provider path).
+      const { contextWindow, maxOutput } = comboLimits;
       if (Number.isFinite(contextWindow)) entry.context_length = contextWindow;
       if (Number.isFinite(maxOutput)) entry.max_completion_tokens = maxOutput;
     }

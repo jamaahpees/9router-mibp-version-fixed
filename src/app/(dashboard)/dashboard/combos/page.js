@@ -9,6 +9,7 @@ import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, ConfirmModa
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { aggregateComboCapabilities } from "open-sse/providers/capabilities.js";
+import { applyComboLimits, comboLimitOverride, parseComboLimit, COMBO_LIMIT_BOUNDS } from "@/shared/utils/comboGraph.js";
 import { resolveProviderId, AI_PROVIDERS } from "@/shared/constants/providers";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
@@ -554,6 +555,9 @@ export default function CombosPage() {
           <div className="flex flex-col gap-3">
             {(() => {
               const comboByName = Object.fromEntries(combos.map((c) => [c.name, c.models]));
+              // Manual limits live on the combo row, not on the seats, so the card
+              // needs them separately to show what a nested name really advertises.
+              const limitsByName = Object.fromEntries(combos.map((c) => [c.name, comboLimitOverride(c)]));
               if (filteredCombos.length === 0) {
                 return (
                   <Card>
@@ -573,6 +577,7 @@ export default function CombosPage() {
                   combo={combo}
                   getCaps={getCaps}
                   comboByName={comboByName}
+                  limitsByName={limitsByName}
                   activeProviders={activeProviders}
                   copied={copied}
                   onCopy={copy}
@@ -665,7 +670,7 @@ function getRouterModelStatus(routerModel, activeProviders) {
   return { ready: false, label: "Not configured", providerId };
 }
 
-function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, selected = false, onToggleSelect }) {
+function ComboCard({ combo, getCaps, comboByName = {}, limitsByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, selected = false, onToggleSelect }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
   const [showRouterSelect, setShowRouterSelect] = useState(false);
   const [showPolicyModal, setShowPolicyModal] = useState(false);
@@ -677,7 +682,12 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
   // The synced catalog is server-only, so resolving here would fall back to the
   // generic patterns and under-report the limits. getCaps carries the server's
   // answer for /api/models.
-  const comboCaps = aggregateComboCapabilities(combo.models, comboByName, getCaps);
+  const limits = comboLimitOverride(combo);
+  const comboCaps = applyComboLimits(
+    aggregateComboCapabilities(combo.models, comboByName, getCaps),
+    limits,
+  );
+  const manualLimits = Number.isFinite(limits.contextWindow) || Number.isFinite(limits.maxOutput);
 
   return (
     <Card padding="sm" className={`group ${selected ? "ring-1 ring-primary/40 bg-primary/[0.03]" : ""}`}>
@@ -707,7 +717,7 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
                     <span>{model}</span>
                     <CapacityBadges caps={
                       comboByName[model]
-                        ? aggregateComboCapabilities(comboByName[model], comboByName, getCaps)
+                        ? applyComboLimits(aggregateComboCapabilities(comboByName[model], comboByName, getCaps), limitsByName[model])
                         : getCaps?.(model)
                     } />
                   </code>
@@ -718,10 +728,18 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
               )}
             </div>
             {comboCaps && (
-              <div className="mt-1 flex items-center gap-2 text-[10px] text-text-muted">
-                <span>ctx {fmtK(comboCaps.contextWindow)}</span>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
+                <span className={Number.isFinite(limits.contextWindow) ? "font-medium text-primary" : ""}>ctx {fmtK(comboCaps.contextWindow)}</span>
                 <span className="opacity-40">·</span>
-                <span>max {fmtK(comboCaps.maxOutput)}</span>
+                <span className={Number.isFinite(limits.maxOutput) ? "font-medium text-primary" : ""}>max {fmtK(comboCaps.maxOutput)}</span>
+                {manualLimits && (
+                  <span
+                    className="rounded bg-primary/10 px-1 py-px font-medium text-primary"
+                    title="Set on this combo instead of derived from its models"
+                  >
+                    manual
+                  </span>
+                )}
               </div>
             )}
             {/* Fusion: judge picker (Auto = first model) */}
@@ -1191,6 +1209,14 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   // Initialize state with combo values - key prop on parent handles reset on remount
   const [name, setName] = useState(combo?.name || "");
   const [models, setModels] = useState(combo?.models || []);
+  // Kept as strings so an empty field means "derive it", not zero.
+  const [contextWindow, setContextWindow] = useState(
+    Number.isFinite(combo?.contextWindow) ? String(combo.contextWindow) : "",
+  );
+  const [maxOutput, setMaxOutput] = useState(
+    Number.isFinite(combo?.maxOutput) ? String(combo.maxOutput) : "",
+  );
+  const [limitError, setLimitError] = useState("");
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -1280,8 +1306,20 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
 
   const handleSave = async () => {
     if (!validateName(name)) return;
+    const ctxLimit = parseComboLimit(contextWindow, "contextWindow");
+    const outLimit = parseComboLimit(maxOutput, "maxOutput");
+    if (ctxLimit.error || outLimit.error) {
+      setLimitError(ctxLimit.error || outLimit.error);
+      return;
+    }
+    setLimitError("");
     setSaving(true);
-    await onSave({ name: name.trim(), models });
+    await onSave({
+      name: name.trim(),
+      models,
+      contextWindow: ctxLimit.value ?? null,
+      maxOutput: outLimit.value ?? null,
+    });
     setSaving(false);
   };
 
@@ -1353,6 +1391,86 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
               <span className="material-symbols-outlined text-[16px]">add</span>
               Add Model
             </button>
+          </div>
+
+          {/* Limits — the numbers clients read when sizing a request */}
+          <div className="rounded-lg border border-dashed border-black/10 p-2.5 dark:border-white/10">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-2">
+              <label className="text-sm font-medium">Limits</label>
+              <span className="text-[10px] text-text-muted">Blank = smallest model in the combo</span>
+            </div>
+            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <Input
+                label={COMBO_LIMIT_BOUNDS.contextWindow.label}
+                type="number"
+                inputMode="numeric"
+                min={COMBO_LIMIT_BOUNDS.contextWindow.min}
+                max={COMBO_LIMIT_BOUNDS.contextWindow.max}
+                step={1000}
+                placeholder="auto"
+                value={contextWindow}
+                onChange={(e) => {
+                  setContextWindow(e.target.value);
+                  setLimitError("");
+                }}
+              />
+              <Input
+                label={COMBO_LIMIT_BOUNDS.maxOutput.label}
+                type="number"
+                inputMode="numeric"
+                min={COMBO_LIMIT_BOUNDS.maxOutput.min}
+                max={COMBO_LIMIT_BOUNDS.maxOutput.max}
+                step={1000}
+                placeholder="auto"
+                value={maxOutput}
+                onChange={(e) => {
+                  setMaxOutput(e.target.value);
+                  setLimitError("");
+                }}
+              />
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              <span className="text-[10px] text-text-muted">Context:</span>
+              {[200000, 400000, 1000000].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => {
+                    setContextWindow(String(n));
+                    setLimitError("");
+                  }}
+                  className="rounded bg-black/5 px-1.5 py-0.5 text-[10px] text-text-muted hover:bg-primary/10 hover:text-primary dark:bg-white/5"
+                >
+                  {fmtK(n)}
+                </button>
+              ))}
+              {(contextWindow || maxOutput) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setContextWindow("");
+                    setMaxOutput("");
+                    setLimitError("");
+                  }}
+                  className="ml-auto rounded border border-dashed border-primary/40 px-1.5 py-0.5 text-[10px] text-primary hover:border-primary hover:bg-primary/5"
+                  title="Clear both overrides and derive them from the models again"
+                >
+                  Reset to auto
+                </button>
+              )}
+            </div>
+            {limitError && (
+              <p className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                <span className="material-symbols-outlined text-[14px]">error</span>
+                {limitError}
+              </p>
+            )}
+            <p className="mt-1 text-[10px] text-text-muted">
+              Published on <code className="font-mono">/v1/models</code> as this combo&apos;s
+              {" "}<code className="font-mono">context_length</code> /{" "}
+              <code className="font-mono">max_completion_tokens</code>. Nothing is clipped
+              here — the number only tells a client how much it may send.
+            </p>
           </div>
 
           {/* Actions */}

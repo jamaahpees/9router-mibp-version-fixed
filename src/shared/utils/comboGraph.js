@@ -95,3 +95,58 @@ export function comboMapFromRows(rows, { excludeId = null, override = null } = {
   }
   return map;
 }
+
+/**
+ * Limits an operator can pin on a combo.
+ *
+ * Without an override a combo advertises the smallest window (and smallest
+ * output) any of its seats can honour, because any seat may answer. That is
+ * honest but pessimistic when every seat really does take 1M, and it is the
+ * only number clients (Claude Code, Cursor, …) use to decide how much context
+ * to send. NULL means "keep deriving it".
+ */
+export const COMBO_LIMIT_BOUNDS = {
+  contextWindow: { min: 1000, max: 10000000, label: "Context window" },
+  maxOutput: { min: 1, max: 2000000, label: "Max output" },
+};
+
+/** Lenient read path: anything that is not a positive integer becomes NULL. */
+export function coerceComboLimit(value, key) {
+  const bounds = COMBO_LIMIT_BOUNDS[key];
+  if (!bounds || value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < bounds.min || n > bounds.max) return null;
+  return n;
+}
+
+/** Strict write path: returns { value } or { error }. */
+export function parseComboLimit(value, key) {
+  const bounds = COMBO_LIMIT_BOUNDS[key];
+  if (!bounds) return { value: null };
+  if (value === null || value === undefined || value === "") return { value: null };
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) {
+    return { error: `${bounds.label} must be a whole number of tokens` };
+  }
+  if (n < bounds.min || n > bounds.max) {
+    return { error: `${bounds.label} must be between ${bounds.min} and ${bounds.max}` };
+  }
+  return { value: n };
+}
+
+/** Explicit limits stored on a combo row (undefined when not set). */
+export function comboLimitOverride(combo) {
+  return {
+    contextWindow: coerceComboLimit(combo?.contextWindow, "contextWindow") ?? undefined,
+    maxOutput: coerceComboLimit(combo?.maxOutput, "maxOutput") ?? undefined,
+  };
+}
+
+/** Overlay a combo's pinned limits on caps derived from its seats. */
+export function applyComboLimits(caps, override) {
+  if (!caps) return caps;
+  const next = { ...caps };
+  if (Number.isFinite(override?.contextWindow)) next.contextWindow = override.contextWindow;
+  if (Number.isFinite(override?.maxOutput)) next.maxOutput = override.maxOutput;
+  return next;
+}

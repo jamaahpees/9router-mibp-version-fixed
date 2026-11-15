@@ -1,11 +1,22 @@
 import { NextResponse } from "next/server";
 import { getCombos, createCombo, getComboByName } from "@/lib/localDb";
-import { cleanComboModels, comboMapFromRows } from "@/shared/utils/comboGraph.js";
+import { cleanComboModels, comboMapFromRows, parseComboLimit } from "@/shared/utils/comboGraph.js";
 
 export const dynamic = "force-dynamic";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
+
+// Optional manual limits: the dashboard lets an operator pin the context window
+// and output budget a combo advertises, instead of always deriving them from the
+// smallest seat. Empty / null clears the override.
+function parseLimits(body) {
+  const contextWindow = parseComboLimit(body.contextWindow, "contextWindow");
+  if (contextWindow.error) return contextWindow;
+  const maxOutput = parseComboLimit(body.maxOutput, "maxOutput");
+  if (maxOutput.error) return maxOutput;
+  return { contextWindow: contextWindow.value, maxOutput: maxOutput.value };
+}
 
 // A combo that reaches itself expands forever at request time, so reject it
 // before it reaches the DB instead of trusting the picker to be careful.
@@ -54,7 +65,18 @@ export async function POST(request) {
     const blocked = cycleError(name, removed);
     if (blocked) return blocked;
 
-    const combo = await createCombo({ name, models: cleanedModels, kind: kind || null });
+    const limits = parseLimits(body);
+    if (limits.error) {
+      return NextResponse.json({ error: limits.error }, { status: 400 });
+    }
+
+    const combo = await createCombo({
+      name,
+      models: cleanedModels,
+      kind: kind || null,
+      contextWindow: limits.contextWindow,
+      maxOutput: limits.maxOutput,
+    });
 
     return NextResponse.json(combo, { status: 201 });
   } catch (error) {

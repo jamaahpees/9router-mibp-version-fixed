@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getComboById, updateCombo, deleteCombo, getComboByName, getCombos, getSettings, updateSettings } from "@/lib/localDb";
 import { resetComboRotation } from "open-sse/services/combo.js";
-import { cleanComboModels, comboMapFromRows } from "@/shared/utils/comboGraph.js";
+import { cleanComboModels, comboMapFromRows, parseComboLimit } from "@/shared/utils/comboGraph.js";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
@@ -59,6 +59,18 @@ export async function PUT(request, { params }) {
         return NextResponse.json({ error: message, blocked }, { status: 400 });
       }
       body.models = cleanedModels;
+    }
+
+    // Manual limits: undefined leaves the stored value alone, null clears it.
+    if ("contextWindow" in body) {
+      const parsed = parseComboLimit(body.contextWindow, "contextWindow");
+      if (parsed.error) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      body.contextWindow = parsed.value;
+    }
+    if ("maxOutput" in body) {
+      const parsed = parseComboLimit(body.maxOutput, "maxOutput");
+      if (parsed.error) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      body.maxOutput = parsed.value;
     }
 
     const combo = await updateCombo(id, body);
