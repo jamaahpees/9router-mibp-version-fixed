@@ -4,12 +4,15 @@ export function createRequestBudget({ signal, deadlineAt = Infinity } = {}) {
   let timer;
   let committed = false;
   const abort = () => controller.abort(signal?.reason || new DOMException("Request aborted", "AbortError"));
-  if (signal?.aborted) abort();
-  else signal?.addEventListener("abort", abort, { once: true });
-  if (Number.isFinite(deadlineAt)) {
+  const arm = () => {
+    clearTimeout(timer);
+    if (!Number.isFinite(deadlineAt)) return;
     timer = setTimeout(() => controller.abort(Object.assign(new Error("Request precommit deadline exceeded"), { name: "TimeoutError", status: 504 })), Math.max(0, deadlineAt - performance.now()));
     timer?.unref?.();
-  }
+  };
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  arm();
   const check = () => {
     if (!committed && performance.now() >= deadlineAt && !controller.signal.aborted) {
       controller.abort(Object.assign(new Error("Request precommit deadline exceeded"), { name: "TimeoutError", status: 504 }));
@@ -40,6 +43,15 @@ export function createRequestBudget({ signal, deadlineAt = Infinity } = {}) {
       }
     },
     disableDeadline() { deadlineAt = Infinity; this.deadlineAt = Infinity; clearTimeout(timer); },
+    // Re-arm from a later decision (a combo carrying its own attempt budget). A
+    // deadline already disabled for a non-streaming call is revived on purpose:
+    // the combo's budget is the client's ceiling, not a hint.
+    setDeadline(at) {
+      if (controller.signal.aborted || committed) return;
+      deadlineAt = Number.isFinite(at) ? at : Infinity;
+      this.deadlineAt = deadlineAt;
+      arm();
+    },
     commit() { check(); committed = true; clearTimeout(timer); },
     dispose() { clearTimeout(timer); signal?.removeEventListener("abort", abort); },
   };

@@ -8,7 +8,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
-import { getSettings } from "@/lib/localDb";
+import { getSettings, getComboByName } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { checkModelAvailability } from "../services/accountStatus.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
@@ -46,6 +46,29 @@ const requestContexts = new WeakMap();
 // exactly that, the process reached 2.1 GB RSS, swap thrashed and the dashboard
 // stopped answering.
 const MAX_COMBO_DEPTH = 4;
+
+// A combo may carry its own attempt budget (`combos.timeoutMs`) so one attempt can
+// never outlive the ceiling the client sets per attempt. Without it nothing in the
+// gateway bounds the whole seat chain: each seat's own connect/TTFT timeout lets two
+// slow seats add up, and a stalled seat is only given up on after minutes, which is
+// how a 180 s attempt happened. A nested combo may shorten an outer budget, never
+// extend it.
+async function applyComboBudget(budget, comboName) {
+  if (!budget) return;
+  let timeoutMs = null;
+  try {
+    const row = await getComboByName(comboName);
+    timeoutMs = Number.isFinite(row?.timeoutMs) && row.timeoutMs > 0 ? row.timeoutMs : null;
+  } catch {
+    return;
+  }
+  if (!timeoutMs) return;
+  const at = performance.now() + timeoutMs;
+  // Infinity means "no deadline yet"; a smaller remaining budget already applies.
+  if (Number.isFinite(budget.deadlineAt) && budget.deadlineAt <= at) return;
+  budget.setDeadline(at);
+  log.info("CHAT", `Combo "${comboName}" attempt budget ${Math.round(timeoutMs / 1000)}s`);
+}
 
 function withComboGuard(request, name, fn) {
   const context = request ? requestContexts.get(request) : null;
@@ -192,6 +215,8 @@ async function handleChatRequest(request, clientRawRequest = null) {
   const comboModels = await getComboModels(modelStr);
   requestContext?.budget.check();
   if (comboModels) {
+    await applyComboBudget(requestContext?.budget, modelStr);
+    requestContext?.budget.check();
     // Check for combo-specific strategy first, fallback to global
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;

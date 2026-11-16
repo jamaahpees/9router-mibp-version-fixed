@@ -688,6 +688,7 @@ function ComboCard({ combo, getCaps, comboByName = {}, limitsByName = {}, active
     limits,
   );
   const manualLimits = Number.isFinite(limits.contextWindow) || Number.isFinite(limits.maxOutput);
+  const attemptBudget = Number.isFinite(combo?.timeoutMs) && combo.timeoutMs > 0 ? combo.timeoutMs : null;
 
   return (
     <Card padding="sm" className={`group ${selected ? "ring-1 ring-primary/40 bg-primary/[0.03]" : ""}`}>
@@ -739,6 +740,17 @@ function ComboCard({ combo, getCaps, comboByName = {}, limitsByName = {}, active
                   >
                     manual
                   </span>
+                )}
+                {attemptBudget && (
+                  <>
+                    <span className="opacity-40">·</span>
+                    <span
+                      className="rounded bg-amber-500/10 px-1 py-px font-medium text-amber-600 dark:text-amber-400"
+                      title="The whole attempt — every model in this combo — is abandoned at this point"
+                    >
+                      cap {Math.round(attemptBudget / 1000)}s
+                    </span>
+                  </>
                 )}
               </div>
             )}
@@ -1216,6 +1228,10 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   const [maxOutput, setMaxOutput] = useState(
     Number.isFinite(combo?.maxOutput) ? String(combo.maxOutput) : "",
   );
+  // Seconds in the UI, milliseconds in the DB.
+  const [timeoutSeconds, setTimeoutSeconds] = useState(
+    Number.isFinite(combo?.timeoutMs) ? String(Math.round(combo.timeoutMs / 1000)) : "",
+  );
   const [limitError, setLimitError] = useState("");
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1312,6 +1328,12 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
       setLimitError(ctxLimit.error || outLimit.error);
       return;
     }
+    const timeoutCandidate = timeoutSeconds === "" ? null : Math.round(Number(timeoutSeconds) * 1000);
+    const timeoutLimit = parseComboLimit(timeoutCandidate, "timeoutMs");
+    if (timeoutLimit.error) {
+      setLimitError(timeoutLimit.error);
+      return;
+    }
     setLimitError("");
     setSaving(true);
     await onSave({
@@ -1319,6 +1341,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
       models,
       contextWindow: ctxLimit.value ?? null,
       maxOutput: outLimit.value ?? null,
+      timeoutMs: timeoutLimit.value ?? null,
     });
     setSaving(false);
   };
@@ -1428,6 +1451,20 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
                   setLimitError("");
                 }}
               />
+              <Input
+                label={`${COMBO_LIMIT_BOUNDS.timeoutMs.label} (s)`}
+                type="number"
+                inputMode="numeric"
+                min={COMBO_LIMIT_BOUNDS.timeoutMs.min / 1000}
+                max={COMBO_LIMIT_BOUNDS.timeoutMs.max / 1000}
+                step={5}
+                placeholder="auto"
+                value={timeoutSeconds}
+                onChange={(e) => {
+                  setTimeoutSeconds(e.target.value);
+                  setLimitError("");
+                }}
+              />
             </div>
             <div className="mt-1.5 flex flex-wrap items-center gap-1">
               <span className="text-[10px] text-text-muted">Context:</span>
@@ -1444,16 +1481,17 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
                   {fmtK(n)}
                 </button>
               ))}
-              {(contextWindow || maxOutput) && (
+              {(contextWindow || maxOutput || timeoutSeconds) && (
                 <button
                   type="button"
                   onClick={() => {
                     setContextWindow("");
                     setMaxOutput("");
+                    setTimeoutSeconds("");
                     setLimitError("");
                   }}
                   className="ml-auto rounded border border-dashed border-primary/40 px-1.5 py-0.5 text-[10px] text-primary hover:border-primary hover:bg-primary/5"
-                  title="Clear both overrides and derive them from the models again"
+                  title="Clear the overrides and derive them from the models again"
                 >
                   Reset to auto
                 </button>
@@ -1470,6 +1508,10 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
               {" "}<code className="font-mono">context_length</code> /{" "}
               <code className="font-mono">max_completion_tokens</code>. Nothing is clipped
               here — the number only tells a client how much it may send.
+              {" "}<strong className="font-medium text-text-main">Attempt timeout</strong> is
+              different: the gateway abandons the whole attempt (every model in the combo) when
+              it expires, so a client retry always gets a fast answer. Keep it below the
+              per-attempt budget the client enforces.
             </p>
           </div>
 

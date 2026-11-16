@@ -72,6 +72,11 @@ export async function PUT(request, { params }) {
       if (parsed.error) return NextResponse.json({ error: parsed.error }, { status: 400 });
       body.maxOutput = parsed.value;
     }
+    if ("timeoutMs" in body) {
+      const parsed = parseComboLimit(body.timeoutMs, "timeoutMs");
+      if (parsed.error) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      body.timeoutMs = parsed.value;
+    }
 
     const combo = await updateCombo(id, body);
     

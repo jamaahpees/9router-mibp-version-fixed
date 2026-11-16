@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -102,6 +102,9 @@ export const TABLES = {
       // smallest window / smallest output any member can honour).
       contextWindow: "INTEGER",
       maxOutput: "INTEGER",
+      // Per-attempt budget in ms. NULL = no combo-level deadline; each seat then
+      // runs until its own upstream timeout, letting the chain add up.
+      timeoutMs: "INTEGER",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },

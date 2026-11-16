@@ -108,6 +108,9 @@ export function comboMapFromRows(rows, { excludeId = null, override = null } = {
 export const COMBO_LIMIT_BOUNDS = {
   contextWindow: { min: 1000, max: 10000000, label: "Context window" },
   maxOutput: { min: 1, max: 2000000, label: "Max output" },
+  // Per-attempt budget. The floor keeps it above a usable single call; the
+  // ceiling is far above any sane client budget so it stays a safety valve.
+  timeoutMs: { min: 5000, max: 300000, label: "Attempt timeout" },
 };
 
 /** Lenient read path: anything that is not a positive integer becomes NULL. */

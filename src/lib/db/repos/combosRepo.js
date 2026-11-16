@@ -13,6 +13,7 @@ function rowToCombo(row) {
     // NULL means "derive from the seats"; a number is the operator's choice.
     contextWindow: coerceComboLimit(row.contextWindow, "contextWindow"),
     maxOutput: coerceComboLimit(row.maxOutput, "maxOutput"),
+    timeoutMs: coerceComboLimit(row.timeoutMs, "timeoutMs"),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -52,12 +53,13 @@ export async function createCombo(data) {
     models,
     contextWindow: coerceComboLimit(data.contextWindow, "contextWindow"),
     maxOutput: coerceComboLimit(data.maxOutput, "maxOutput"),
+    timeoutMs: coerceComboLimit(data.timeoutMs, "timeoutMs"),
     createdAt: now,
     updatedAt: now,
   };
   db.run(
-    `INSERT INTO combos(id, name, kind, models, contextWindow, maxOutput, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-    [combo.id, combo.name, combo.kind, stringifyJson(combo.models), combo.contextWindow, combo.maxOutput, combo.createdAt, combo.updatedAt]
+    `INSERT INTO combos(id, name, kind, models, contextWindow, maxOutput, timeoutMs, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [combo.id, combo.name, combo.kind, stringifyJson(combo.models), combo.contextWindow, combo.maxOutput, combo.timeoutMs, combo.createdAt, combo.updatedAt]
   );
   return combo;
 }
@@ -79,9 +81,10 @@ export async function updateCombo(id, data) {
     }
     merged.contextWindow = coerceComboLimit(merged.contextWindow, "contextWindow");
     merged.maxOutput = coerceComboLimit(merged.maxOutput, "maxOutput");
+    merged.timeoutMs = coerceComboLimit(merged.timeoutMs, "timeoutMs");
     db.run(
-      `UPDATE combos SET name = ?, kind = ?, models = ?, contextWindow = ?, maxOutput = ?, updatedAt = ? WHERE id = ?`,
-      [merged.name, merged.kind, stringifyJson(merged.models || []), merged.contextWindow, merged.maxOutput, merged.updatedAt, id]
+      `UPDATE combos SET name = ?, kind = ?, models = ?, contextWindow = ?, maxOutput = ?, timeoutMs = ?, updatedAt = ? WHERE id = ?`,
+      [merged.name, merged.kind, stringifyJson(merged.models || []), merged.contextWindow, merged.maxOutput, merged.timeoutMs, merged.updatedAt, id]
     );
     result = merged;
   });

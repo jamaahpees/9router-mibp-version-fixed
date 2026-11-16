@@ -15,7 +15,9 @@ function parseLimits(body) {
   if (contextWindow.error) return contextWindow;
   const maxOutput = parseComboLimit(body.maxOutput, "maxOutput");
   if (maxOutput.error) return maxOutput;
-  return { contextWindow: contextWindow.value, maxOutput: maxOutput.value };
+  const timeoutMs = parseComboLimit(body.timeoutMs, "timeoutMs");
+  if (timeoutMs.error) return timeoutMs;
+  return { contextWindow: contextWindow.value, maxOutput: maxOutput.value, timeoutMs: timeoutMs.value };
 }
 
 // A combo that reaches itself expands forever at request time, so reject it
@@ -76,6 +78,7 @@ export async function POST(request) {
       kind: kind || null,
       contextWindow: limits.contextWindow,
       maxOutput: limits.maxOutput,
+      timeoutMs: limits.timeoutMs,
     });
 
     return NextResponse.json(combo, { status: 201 });

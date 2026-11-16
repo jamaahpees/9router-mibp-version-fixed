@@ -65,4 +65,19 @@ describe("combo limit override", () => {
     expect(fractional.error).toMatch(/Max output must be a whole number/);
     expect(parseComboLimit(1000000, "contextWindow")).toEqual({ value: 1000000 });
   });
+
+  it("bounds the attempt timeout separately from the published limits", () => {
+    expect(parseComboLimit(60000, "timeoutMs")).toEqual({ value: 60000 });
+    expect(parseComboLimit("", "timeoutMs")).toEqual({ value: null });
+    expect(parseComboLimit(1000, "timeoutMs").error).toMatch(/Attempt timeout must be between/);
+    expect(parseComboLimit(300001, "timeoutMs").error).toMatch(/Attempt timeout must be between/);
+    expect(coerceComboLimit(60000, "timeoutMs")).toBe(60000);
+    expect(coerceComboLimit(0, "timeoutMs")).toBe(null);
+  });
+
+  it("keeps the attempt timeout out of the published capability overlay", () => {
+    const override = comboLimitOverride({ contextWindow: 1000000, timeoutMs: 60000 });
+
+    expect(override).toEqual({ contextWindow: 1000000, maxOutput: undefined });
+  });
 });
