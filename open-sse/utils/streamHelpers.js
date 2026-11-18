@@ -184,9 +184,22 @@ export function formatSSE(data, sourceFormat) {
 export function buildStreamErrorBytes(statusCode, message, clientFormat) {
   const { error } = buildErrorBody(statusCode, message);
 
-  const sse = clientFormat === FORMATS.CLAUDE
-    ? formatSSE({ type: "error", error }, FORMATS.CLAUDE)
-    : formatSSE({ error }, clientFormat) + SSE_DONE;
+  if (clientFormat === FORMATS.CLAUDE) {
+    return sharedEncoder.encode(formatSSE({ type: "error", error }, FORMATS.CLAUDE));
+  }
 
-  return sharedEncoder.encode(sse);
+  // OpenAI-framed clients treat a stream without a terminal chunk as a dropped
+  // connection and report "stream ended without finish_reason", hiding the error
+  // frame that follows. Send an explicit terminal chunk first, then the error, so
+  // the abort is both terminal and informative.
+  const terminal = clientFormat === FORMATS.OPENAI
+    ? formatSSE({
+        id: "chatcmpl-error",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        choices: [{ index: 0, delta: {}, finish_reason: "error" }],
+      }, FORMATS.OPENAI)
+    : "";
+
+  return sharedEncoder.encode(terminal + formatSSE({ error }, clientFormat) + SSE_DONE);
 }

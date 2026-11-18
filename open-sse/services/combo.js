@@ -192,7 +192,48 @@ async function handleGradingChat({ body, models, handleSingleModel, log, comboNa
     try {
       log.info("COMBO", `Fallback Grading: trying ${i + 1}/${models.length}: ${model}`);
       result = await handleSingleModel(body, model);
-      if (result.ok) return result;
+      if (result.ok) {
+        // A 2xx is not proof of an answer. Gemini aborts a generation
+        // (MALFORMED_FUNCTION_CALL) and still returns 200 with an empty stream;
+        // committing that to the client produced a turn that simply ended, which
+        // strict OpenAI clients report as "stream ended without finish_reason".
+        // Same peek the fallback loop below performs.
+        let peeked = null;
+        try {
+          peeked = await peekComboResponse(result, log);
+        } catch (peekErr) {
+          // result.body is already locked by getReader() at this point, so it can
+          // no longer be streamed. Degrade to a clean, valid empty SSE stream.
+          log.warn("COMBO", `empty-peek error on ${model}, returning empty SSE: ${peekErr?.message || peekErr}`);
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (!peeked) {
+          log.info("COMBO", `Model ${model} succeeded`);
+          return result;
+        }
+        if (peeked.outcome === "content") {
+          log.info("COMBO", `Model ${model} succeeded${peeked.timedOut ? " (peek deadline; committed)" : ""}`);
+          return peeked.response;
+        }
+        const reasonLabel = peeked.finishReason || "no-content";
+        const isLastGrade = i === models.length - 1;
+        if (isNoRetryFinish(peeked.finishReason) || isLastGrade) {
+          log.warn("COMBO", `Model ${model} returned empty (${reasonLabel}) — ${isNoRetryFinish(peeked.finishReason) ? "no-retry class" : "last candidate"}, returning as-is`);
+          return peeked.response;
+        }
+        log.warn("COMBO", `Model ${model} returned empty (${reasonLabel}) — falling through to next candidate`);
+        // Drain/close the discarded stream in the background so usage logging still runs.
+        peeked.response.body?.cancel?.().catch(() => {});
+        lastError = `empty generation (${reasonLabel})`;
+        if (isCurrent()) {
+          state.cooldowns.set(i, Math.max(state.cooldowns.get(i) || 0, Date.now() + TRANSIENT_COOLDOWN_MS));
+          state.index = Math.max(state.index, i + 1);
+        }
+        continue;
+      }
       status = result.status;
       errorText = result.statusText || String(status);
       try {

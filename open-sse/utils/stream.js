@@ -97,6 +97,23 @@ export function createSSEStream(options = {}) {
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
+
+  // A terminal chunk carries finish_reason (OpenAI) or stop_reason/message_stop
+  // (Claude). Strict OpenAI clients reject a stream that ends without one
+  // ("stream ended without finish_reason"), so flush() synthesizes the missing
+  // terminal when the upstream never sent it.
+  let terminalChunkSent = false;
+  let passthroughOpenAIShaped = false;
+  const markTerminalChunk = (item) => {
+    if (!item || typeof item !== "object") return;
+    if (Array.isArray(item.choices)) {
+      passthroughOpenAIShaped = true;
+      if (item.choices.some((c) => c && c.finish_reason)) terminalChunkSent = true;
+      return;
+    }
+    if (item.type === "message_delta" && item.delta && item.delta.stop_reason) terminalChunkSent = true;
+    else if (item.type === "message_stop") terminalChunkSent = true;
+  };
   let finalized = false;
   let completionFlushTimer = null;
 
@@ -144,6 +161,7 @@ export function createSSEStream(options = {}) {
       const output = formatSSE(item, sourceFormat);
       reqLogger?.appendConvertedChunk?.(output);
       controller.enqueue(sharedEncoder.encode(output));
+      markTerminalChunk(item);
       sseEmittedCount++;
     }
     finalizeStream();
@@ -182,6 +200,7 @@ export function createSSEStream(options = {}) {
           let output;
           let injectedUsage = false;
           let responsesTerminal = false;
+          let forwardedChunk = null;
 
           // Upstream already sent the sentinel; flush() must not append a second one.
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() === "[DONE]") streamDoneSent = true;
@@ -298,6 +317,7 @@ export function createSSEStream(options = {}) {
                 output = `data: ${JSON.stringify(parsed)}\n`;
                 injectedUsage = true;
               }
+              forwardedChunk = parsed;
             } catch {
               // Skip non-JSON data lines silently — don't forward garbage to clients.
               // Upstream providers sometimes return plain-text errors (HTML, rate-limit
@@ -316,6 +336,7 @@ export function createSSEStream(options = {}) {
 
           reqLogger?.appendConvertedChunk?.(output);
           controller.enqueue(sharedEncoder.encode(output));
+          markTerminalChunk(forwardedChunk);
           // Responses clients (codex CLI) close on response.completed instead of [DONE]
           if (responsesTerminal) finalizeStream();
           continue;
@@ -457,6 +478,7 @@ export function createSSEStream(options = {}) {
             const output = formatSSE(item, sourceFormat);
             reqLogger?.appendConvertedChunk?.(output);
             controller.enqueue(sharedEncoder.encode(output));
+            markTerminalChunk(item);
             sseEmittedCount++;
           }
         }
@@ -503,6 +525,19 @@ export function createSSEStream(options = {}) {
           // Gemini-family clients (Antigravity, Vertex, Gemini) reject this sentinel with 400 syntax errors.
           const isGeminiFamily = provider === "antigravity" || provider === "gemini" || provider === "vertex";
           if (!streamDoneSent && !isGeminiFamily) {
+            if (passthroughOpenAIShaped && !terminalChunkSent) {
+              const synth = {
+                id: `chatcmpl-${Date.now().toString(36)}`,
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: model || undefined,
+                choices: [{ index: 0, delta: {}, finish_reason: totalContentLength > 0 ? "stop" : "error" }],
+              };
+              const synthOutput = formatSSE(synth, FORMATS.OPENAI);
+              reqLogger?.appendConvertedChunk?.(synthOutput);
+              controller.enqueue(sharedEncoder.encode(synthOutput));
+              terminalChunkSent = true;
+            }
             const doneOutput = "data: [DONE]\n\n";
             reqLogger?.appendConvertedChunk?.(doneOutput);
             controller.enqueue(sharedEncoder.encode(doneOutput));
@@ -543,6 +578,7 @@ export function createSSEStream(options = {}) {
                 const output = formatSSE(item, sourceFormat);
                 reqLogger?.appendConvertedChunk?.(output);
                 controller.enqueue(sharedEncoder.encode(output));
+                markTerminalChunk(item);
               }
             }
           }
@@ -563,6 +599,7 @@ export function createSSEStream(options = {}) {
             const output = formatSSE(item, sourceFormat);
             reqLogger?.appendConvertedChunk?.(output);
             controller.enqueue(sharedEncoder.encode(output));
+            markTerminalChunk(item);
           }
         }
 
@@ -580,6 +617,34 @@ export function createSSEStream(options = {}) {
           reqLogger?.appendConvertedChunk?.(doneOutput);
           controller.enqueue(sharedEncoder.encode(doneOutput));
           openAIResponsesDoneSent = true;
+          streamDoneSent = true;
+        }
+
+        // An OpenAI-framed stream that ends without a terminal chunk is
+        // indistinguishable from a dropped connection: strict clients (OpenCode)
+        // abort the turn with "stream ended without finish_reason" even after a
+        // complete answer. Synthesize the missing terminal: "stop" when content
+        // was produced, "error" when the upstream yielded nothing at all (the
+        // honest signal for an empty generation, and still terminal for the client).
+        if (sourceFormat === FORMATS.OPENAI && !terminalChunkSent) {
+          const synth = {
+            id: `chatcmpl-${Date.now().toString(36)}`,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: model || undefined,
+            choices: [{ index: 0, delta: {}, finish_reason: totalContentLength > 0 ? "stop" : "error" }],
+          };
+          const output = formatSSE(synth, FORMATS.OPENAI);
+          reqLogger?.appendConvertedChunk?.(output);
+          controller.enqueue(sharedEncoder.encode(output));
+          terminalChunkSent = true;
+          sseEmittedCount++;
+        }
+
+        if (sourceFormat === FORMATS.OPENAI && !streamDoneSent) {
+          const doneOutput = SSE_DONE;
+          reqLogger?.appendConvertedChunk?.(doneOutput);
+          controller.enqueue(sharedEncoder.encode(doneOutput));
           streamDoneSent = true;
         }
 
