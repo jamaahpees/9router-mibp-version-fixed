@@ -11,7 +11,6 @@ const DEAD_PREFIXES = [
   "gemini-pro-agent",
   "claude-sonnet-5-5",
   "claude-opus-5-5",
-  "gemini-4-hydrogen",
 ];
 
 describe("antigravity catalog reflects what the backend serves", () => {
@@ -24,7 +23,7 @@ describe("antigravity catalog reflects what the backend serves", () => {
 
   it("keeps the models that actually answer 200", () => {
     const ids = antigravity.models.map((m) => m.id);
-    for (const id of ["gemini-3.8-flash", "gemini-3.8-flash-high", "claude-sonnet-4-6", "gpt-oss-120b-medium", "gemini-3.1-flash-image"]) {
+    for (const id of ["gemini-4-hydrogen-sonar", "gemini-3.8-flash", "gemini-3.8-flash-high", "claude-sonnet-4-6", "gpt-oss-120b-medium", "gemini-3.1-flash-image"]) {
       expect(ids).toContain(id);
     }
   });
@@ -36,6 +35,7 @@ describe("antigravity catalog reflects what the backend serves", () => {
     }
     // listed upstream but answered 503 "No capacity available"
     expect(ids).not.toContain("gemini-2.5-pro");
+    expect(ids).not.toContain("gemini-4-hydrogen");
   });
 });
 
