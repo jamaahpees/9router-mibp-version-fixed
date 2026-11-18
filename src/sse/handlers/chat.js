@@ -251,7 +251,7 @@ async function handleChatRequest(request, clientRawRequest = null) {
       body,
       models: augmentedModels,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m, seat) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, seat),
         adapterAdded
       ),
       log,
@@ -286,7 +286,7 @@ async function handleChatRequest(request, clientRawRequest = null) {
       body,
       models: soloAugmented,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m, seat) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, seat),
         adapterAdded
       ),
       log,
@@ -301,7 +301,7 @@ async function handleChatRequest(request, clientRawRequest = null) {
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null, seat = null) {
   const modelInfo = await getModelInfo(modelStr);
   if (request) requestContexts.get(request)?.budget.check();
 
@@ -393,10 +393,17 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   const context = request && requestContexts.get(request);
   const budget = context?.budget;
+  // A combo seat may carry its own deadline (open-sse/services/candidateDeadline.js). Merge it
+  // with the client's signal so either can abort this attempt, and hand the seat deadline down
+  // so chatCore's own timeout checks fire on the seat instead of on the whole request.
+  const seatSignal = seat?.signal || null;
+  const baseSignal = budget?.signal || request?.signal;
+  const activeSignal = seatSignal && baseSignal ? AbortSignal.any([baseSignal, seatSignal]) : (seatSignal || baseSignal);
+  const activeDeadlineAt = seat?.deadlineAt ?? budget?.deadlineAt;
   while (true) {
     budget?.check();
     const selection = getProviderCredentials(provider, excludeConnectionIds, model, {
-      signal: budget?.signal || request?.signal,
+      signal: activeSignal,
       onPhase: (phase) => context?.lifecycle.onPhase(phase, { provider, model }),
       requestedModel: requestedModel || model,
     });
@@ -442,7 +449,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     budget?.check();
     attempt?.onPhase("preparing_request");
     const result = await handleChatCore({
-      requestContext: { signal: budget?.signal || request?.signal, deadlineAt: budget?.deadlineAt, wait: budget ? (work) => budget.wait(work) : null,
+      requestContext: { signal: activeSignal, deadlineAt: activeDeadlineAt, wait: budget ? (work) => budget.wait(work) : null,
         check: () => budget?.check(), onPhase: (phase) => attempt?.onPhase(phase),
         onMilestone: (name) => attempt?.onMilestone(name), finishAttempt: (status) => { attempt?.finishAttempt(status); if (context && (status === "completed" || status === "error" || status === "aborted" || status === "timeout")) context.streamOutcome = status; }, pendingId: attempt?.id },
       body: { ...body, model: `${provider}/${model}` },

@@ -63,6 +63,13 @@ export const CLAUDE_PRECOMMIT_TIMEOUT_MS = envMs("CLAUDE_PRECOMMIT_TIMEOUT_MS", 
 // Env: EMPTY_PEEK_DEADLINE_MS.
 export const EMPTY_PEEK_DEADLINE_MS = envMs("EMPTY_PEEK_DEADLINE_MS", 45 * 1000);
 
+// Combo per-candidate deadline: how long one seat may run (prefill + first content) before the
+// cursor moves to the next seat. Armed only when a next candidate exists, so the last seat is
+// never cut. Chosen to leave the next seat room inside the client's 75-90 s per-attempt budget
+// while staying above the slowest legitimate prefill observed (~41 s at 591k prompt tokens).
+// Env: COMBO_CANDIDATE_DEADLINE_MS.
+export const COMBO_CANDIDATE_DEADLINE_MS = envMs("COMBO_CANDIDATE_DEADLINE_MS", 45 * 1000);
+
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
 

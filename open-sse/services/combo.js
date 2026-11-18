@@ -9,6 +9,7 @@ import { parseModel } from "./model.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 import { TRANSIENT_COOLDOWN_MS } from "../config/errorConfig.js";
 import { peekStreamForContent, reconstructStream, isNoRetryFinish } from "./emptyFailover.js";
+import { startCandidateDeadline } from "./candidateDeadline.js";
 import {
   getStickyComboModel,
   setStickyComboModel,
@@ -19,16 +20,29 @@ import {
 // Peek a 2xx combo response for real content. Returns null for non-SSE responses (leave
 // them untouched). For SSE, returns { outcome: "content"|"empty", finishReason, response }
 // where `response` is a faithful replay of the original stream (head buffer + live reader).
-async function peekComboResponse(result, log) {
+// `cutOverOnDeadline` turns an expired peek into an empty verdict instead of a commit: the
+// seat had its whole candidate window and released nothing, and a successor can still answer.
+async function peekComboResponse(result, log, { deadlineMs, cutOverOnDeadline = false } = {}) {
   const ct = (result.headers.get("content-type") || "").toLowerCase();
   if (!result.body || !ct.includes("text/event-stream")) return null;
-  const peeked = await peekStreamForContent(result.body);
+  const peeked = await peekStreamForContent(result.body, deadlineMs ? { deadlineMs } : undefined);
   const response = new Response(reconstructStream(peeked.head, peeked.reader, peeked.pendingRead), {
     status: result.status,
     statusText: result.statusText,
     headers: result.headers,
   });
+  if (peeked.timedOut && cutOverOnDeadline) {
+    return { outcome: "empty", finishReason: "deadline", timedOut: true, response };
+  }
   return { outcome: peeked.outcome, finishReason: peeked.finishReason, timedOut: peeked.timedOut, response };
+}
+
+// True when this seat was cut by its own deadline. Such a seat never produced a verdict of
+// its own, so the caller must not treat the abort status as that member's answer.
+function seatDeadlineFired(seat, label, log) {
+  if (!seat?.aborted) return false;
+  log.warn("COMBO", `Model ${label} hit the ${Math.round(seat.ms / 1000)}s candidate deadline before answering — falling through to next candidate`);
+  return true;
 }
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
@@ -189,9 +203,13 @@ async function handleGradingChat({ body, models, handleSingleModel, log, comboNa
     let errorText;
     let retryAt = null;
     let status = 503;
+    // Only a seat that still has a successor may be cut; the last seat fails open.
+    const seat = startCandidateDeadline({ hasNext: i < models.length - 1 });
     try {
       log.info("COMBO", `Fallback Grading: trying ${i + 1}/${models.length}: ${model}`);
-      result = await handleSingleModel(body, model);
+      result = await handleSingleModel(body, model, seat ? { signal: seat.signal, deadlineAt: seat.deadlineAt } : undefined);
+      // Headers are in: stop aborting this seat, the peek deadline governs from here.
+      seat?.disarm();
       if (result.ok) {
         // A 2xx is not proof of an answer. Gemini aborts a generation
         // (MALFORMED_FUNCTION_CALL) and still returns 200 with an empty stream;
@@ -200,7 +218,7 @@ async function handleGradingChat({ body, models, handleSingleModel, log, comboNa
         // Same peek the fallback loop below performs.
         let peeked = null;
         try {
-          peeked = await peekComboResponse(result, log);
+          peeked = await peekComboResponse(result, log, { deadlineMs: seat?.remainingMs(), cutOverOnDeadline: !!seat });
         } catch (peekErr) {
           // result.body is already locked by getReader() at this point, so it can
           // no longer be streamed. Degrade to a clean, valid empty SSE stream.
@@ -224,7 +242,11 @@ async function handleGradingChat({ body, models, handleSingleModel, log, comboNa
           log.warn("COMBO", `Model ${model} returned empty (${reasonLabel}) — ${isNoRetryFinish(peeked.finishReason) ? "no-retry class" : "last candidate"}, returning as-is`);
           return peeked.response;
         }
-        log.warn("COMBO", `Model ${model} returned empty (${reasonLabel}) — falling through to next candidate`);
+        if (peeked.finishReason === "deadline") {
+          log.warn("COMBO", `Model ${model} released no content within the ${Math.round(seat.ms / 1000)}s candidate deadline — falling through to next candidate`);
+        } else {
+          log.warn("COMBO", `Model ${model} returned empty (${reasonLabel}) — falling through to next candidate`);
+        }
         // Drain/close the discarded stream in the background so usage logging still runs.
         peeked.response.body?.cancel?.().catch(() => {});
         lastError = `empty generation (${reasonLabel})`;
@@ -249,8 +271,21 @@ async function handleGradingChat({ body, models, handleSingleModel, log, comboNa
         if (Number.isFinite(parsed) && parsed > Date.now()) retryAt = Math.max(retryAt || 0, parsed);
       }
     } catch (error) {
-      if (error?.name === "AbortError" || error?.localTermination) throw error;
+      // A seat cut by its own deadline must not kill the request; only the client may.
+      if (!seat?.aborted && (error?.name === "AbortError" || error?.localTermination)) throw error;
       errorText = error?.message || String(error);
+    } finally {
+      seat?.disarm();
+    }
+    // A seat cut by its own deadline never got to answer: hand the request to the next
+    // candidate regardless of the status the abort produced inside chatCore.
+    if (seatDeadlineFired(seat, model, log)) {
+      lastError = `candidate deadline ${Math.round(seat.ms / 1000)}s exceeded`;
+      if (isCurrent()) {
+        state.cooldowns.set(i, Math.max(state.cooldowns.get(i) || 0, Date.now() + TRANSIENT_COOLDOWN_MS));
+        state.index = Math.max(state.index, i + 1);
+      }
+      continue;
     }
     if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
     if (typeof errorText !== "string") errorText = JSON.stringify(errorText);
@@ -638,8 +673,12 @@ export async function handleComboChat({
     const modelStr = rotatedModels[i];
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
+    // Only a seat that still has a successor may be cut; the last seat fails open.
+    const seat = startCandidateDeadline({ hasNext: i < rotatedModels.length - 1 });
     try {
-      const result = await handleSingleModel(body, modelStr);
+      const result = await handleSingleModel(body, modelStr, seat ? { signal: seat.signal, deadlineAt: seat.deadlineAt } : undefined);
+      // Headers are in: stop aborting this seat, the peek deadline governs from here.
+      seat?.disarm();
       
       // Success (2xx). A 2xx is necessary but NOT sufficient: Gemini aborts (e.g.
       // MALFORMED_FUNCTION_CALL) still return 200 and stream empty content, which would
@@ -648,7 +687,7 @@ export async function handleComboChat({
       if (result.ok) {
         let peeked = null;
         try {
-          peeked = await peekComboResponse(result, log);
+          peeked = await peekComboResponse(result, log, { deadlineMs: seat?.remainingMs(), cutOverOnDeadline: !!seat });
         } catch (peekErr) {
           // peekStreamForContent is written not to throw; if reconstruction/Response
           // construction ever does, result.body is already locked by getReader() and can no
@@ -704,7 +743,11 @@ export async function handleComboChat({
           return peeked.response;
         }
 
-        log.warn("COMBO", `Model ${modelStr} returned empty (${reasonLabel}) — falling through to next candidate`);
+        if (peeked.finishReason === "deadline") {
+          log.warn("COMBO", `Model ${modelStr} released no content within the ${Math.round(seat.ms / 1000)}s candidate deadline — falling through to next candidate`);
+        } else {
+          log.warn("COMBO", `Model ${modelStr} returned empty (${reasonLabel}) — falling through to next candidate`);
+        }
         if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
           clearStickyComboSession(comboName, sessionId);
         }
@@ -712,6 +755,14 @@ export async function handleComboChat({
         peeked.response.body?.cancel?.().catch(() => {});
         lastError = `empty generation (${reasonLabel})`;
         if (!lastStatus) lastStatus = 502;
+        continue;
+      }
+
+      // A seat cut by its own deadline never got to answer: hand the request to the next
+      // candidate instead of reading the abort status as this member's verdict.
+      if (seatDeadlineFired(seat, modelStr, log)) {
+        lastError = `candidate deadline ${Math.round(seat.ms / 1000)}s exceeded`;
+        if (!lastStatus) lastStatus = 504;
         continue;
       }
 
@@ -779,7 +830,8 @@ export async function handleComboChat({
       if (!lastStatus) lastStatus = result.status;
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
-      if (signal?.aborted || error?.name === "AbortError" || error?.localTermination) throw error;
+      // A seat cut by its own deadline must not kill the request; only the client may.
+      if (signal?.aborted || (!seat?.aborted && (error?.name === "AbortError" || error?.localTermination))) throw error;
       // Catch unexpected exceptions to ensure fallback continues
       if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
         clearStickyComboSession(comboName, sessionId);
@@ -787,6 +839,14 @@ export async function handleComboChat({
       lastError = error.message || String(error);
       if (!lastStatus) lastStatus = 500;
       log.warn("COMBO", `Model ${modelStr} threw error, trying next`, { error: lastError });
+    } finally {
+      seat?.disarm();
+    }
+    // A seat cut by its own deadline never got to answer, whatever it threw on the way out.
+    if (seatDeadlineFired(seat, modelStr, log)) {
+      lastError = `candidate deadline ${Math.round(seat.ms / 1000)}s exceeded`;
+      if (!lastStatus) lastStatus = 504;
+      continue;
     }
   }
 
