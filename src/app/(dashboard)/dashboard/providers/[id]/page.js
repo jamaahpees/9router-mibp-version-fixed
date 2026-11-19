@@ -1059,9 +1059,13 @@ export default function ProviderDetailPage() {
     return "Selected connections have mixed proxy bindings";
   })();
 
+  // Bulk proxy actions must only touch what the person picked. With no
+  // checkbox ticked they fall back to every connection of the provider, which
+  // is the behaviour the header button has always advertised.
+  const proxyTargetConnections = selectedConnections.length > 0 ? selectedConnections : connections;
+
   const openBulkProxyModal = () => {
-    if (selectedConnections.length === 0) return;
-    const uniquePoolIds = [...new Set(selectedConnections.map((conn) => conn.providerSpecificData?.proxyPoolId || "__none__"))];
+    const uniquePoolIds = [...new Set(proxyTargetConnections.map((conn) => conn.providerSpecificData?.proxyPoolId || "__none__"))];
     setBulkProxyPoolId(uniquePoolIds.length === 1 ? uniquePoolIds[0] : "__none__");
     setShowBulkProxyModal(true);
   };
@@ -1097,7 +1101,7 @@ export default function ProviderDetailPage() {
   };
 
   const handleApplySinglePool = (proxyPoolId) => {
-    const targets = connections.map((c) => ({ connectionId: c.id, proxyPoolId }));
+    const targets = proxyTargetConnections.map((c) => ({ connectionId: c.id, proxyPoolId }));
     return applyProxyAssignments(targets);
   };
 
@@ -1107,7 +1111,7 @@ export default function ProviderDetailPage() {
       alert("No active proxy pools available.");
       return;
     }
-    const targets = connections.map((c, i) => ({
+    const targets = proxyTargetConnections.map((c, i) => ({
       connectionId: c.id,
       proxyPoolId: activePools[i % activePools.length].id,
     }));
@@ -1210,9 +1214,15 @@ export default function ProviderDetailPage() {
     <Modal
       isOpen={showBulkProxyModal}
       onClose={closeBulkProxyModal}
-      title={`Apply Proxy (${connections.length} connections)`}
+      title={`Apply Proxy (${proxyTargetConnections.length} ${proxyTargetConnections.length === 1 ? "connection" : "connections"})`}
     >
       <div className="flex flex-col gap-3">
+        <p className="text-xs text-text-muted">
+          {selectedConnections.length > 0
+            ? `Applying to ${selectedConnections.length} selected connection${selectedConnections.length === 1 ? "" : "s"}.`
+            : `Nothing selected, so this applies to all ${connections.length} connections.`}
+          {selectedProxySummary ? ` ${selectedProxySummary}.` : ""}
+        </p>
         <div className="flex flex-col">
           <button
             onClick={handleApplyOneToOne}
@@ -1648,7 +1658,7 @@ export default function ProviderDetailPage() {
                   size="sm"
                   variant="secondary"
                   icon="lan"
-                  onClick={() => setShowBulkProxyModal(true)}
+                  onClick={openBulkProxyModal}
                 >
                   Apply Proxy
                 </Button>
