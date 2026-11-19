@@ -126,6 +126,15 @@ export function reorderByCapabilities(models, required) {
 const comboRotationState = new Map();
 const comboGradingState = new Map();
 
+// A quota verdict names the reset of ONE account, and it can sit days away.
+// Sleeping the whole combo grade that long pins every request to the same 503
+// for days even after another account serves the model again, so the wait is
+// capped and availability is re-checked at the end of the window.
+const COMBO_MAX_MODEL_COOLDOWN_MS = 10 * 60 * 1000;
+function clampComboCooldown(untilMs) {
+  return Math.min(untilMs, Date.now() + COMBO_MAX_MODEL_COOLDOWN_MS);
+}
+
 // A grading cursor only moves forward within a cycle. State identity guards
 // in-flight requests against resets; cycle guards prevent stale completions.
 async function handleGradingChat({ body, models, handleSingleModel, log, comboName, signal, checkModelAvailability }) {
@@ -165,12 +174,12 @@ async function handleGradingChat({ body, models, handleSingleModel, log, comboNa
         state.index = r;
         break;
       }
-      let retryMs = Date.now() + TRANSIENT_COOLDOWN_MS;
-      if (avail && avail.retryAfter) {
-        const parsed = Date.parse(avail.retryAfter);
-        if (Number.isFinite(parsed) && parsed > Date.now()) retryMs = parsed;
-      }
-      state.cooldowns.set(r, Math.max(state.cooldowns.get(r) || 0, retryMs));
+      // Account resets can be days away, yet the user may switch a fresh
+      // account on at any moment and this availability check is read-only (no
+      // upstream call). Holding the grade for the account's whole quota window
+      // would keep serving a lower grade long after a usable account came back,
+      // so hold it only briefly and re-check.
+      state.cooldowns.set(r, Math.max(state.cooldowns.get(r) || 0, Date.now() + TRANSIENT_COOLDOWN_MS));
     }
   }
   let lastError = "All combo models unavailable";
@@ -193,8 +202,9 @@ async function handleGradingChat({ body, models, handleSingleModel, log, comboNa
     if (!stillHasAccounts || stillHasAccounts.availableCount === 0) {
       const logFn = log?.debug || log?.info;
       logFn?.call(log, "GRADING", `Model ${model} has no available accounts, advancing cursor`);
-      const retryMs = (stillHasAccounts?.retryAfter && Date.parse(stillHasAccounts.retryAfter)) || (Date.now() + TRANSIENT_COOLDOWN_MS);
-      state.cooldowns.set(i, Math.max(state.cooldowns.get(i) || 0, retryMs));
+      // Same reason as the grade monitor: the check is read-only, so re-check
+      // on the next request instead of freezing this grade for a quota window.
+      state.cooldowns.set(i, Math.max(state.cooldowns.get(i) || 0, Date.now() + TRANSIENT_COOLDOWN_MS));
       state.index = Math.max(state.index, i + 1);
       continue;
     }
@@ -293,7 +303,7 @@ async function handleGradingChat({ body, models, handleSingleModel, log, comboNa
     if (!shouldFallback && result) return result;
     lastError = errorText;
     if (isCurrent()) {
-      state.cooldowns.set(i, Math.max(state.cooldowns.get(i) || 0, retryAt || Date.now() + cooldownMs));
+      state.cooldowns.set(i, Math.max(state.cooldowns.get(i) || 0, clampComboCooldown(retryAt || Date.now() + cooldownMs)));
       state.index = Math.max(state.index, i + 1);
     }
   }
