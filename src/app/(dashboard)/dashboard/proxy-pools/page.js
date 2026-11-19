@@ -869,20 +869,26 @@ export default function ProxyPoolsPage() {
                   {pool.noProxy ? (
                     <p className="text-xs text-text-muted truncate">No proxy: {pool.noProxy}</p>
                   ) : null}
-                  {pool.quota && pool.quota.limit ? (
-                    <div className="mt-1.5 flex items-center gap-2">
-                      <div
-                        className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-black/10 dark:bg-white/10"
-                        title={`${pool.quota.percent}% of today's allowance used`}
-                      >
+                  {pool.quota && pool.quota.period ? (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                      {pool.quota.limit ? (
                         <div
-                          className={`h-full rounded-full ${pool.quota.percent >= 90 ? "bg-red-500" : pool.quota.percent >= 70 ? "bg-amber-500" : "bg-primary"}`}
-                          style={{ width: `${pool.quota.percent}%` }}
-                        />
-                      </div>
-                      <p className="text-[11px] text-text-muted">
-                        {`Quota today: ${pool.quota.used.toLocaleString()} / ${pool.quota.limit.toLocaleString()} · ${pool.quota.remaining.toLocaleString()} left (UTC ${pool.quota.day})`}
-                      </p>
+                          className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-black/10 dark:bg-white/10"
+                          title={`${pool.quota.percent}% of the ${pool.quota.period === "day" ? "daily" : "monthly"} allowance used`}
+                        >
+                          <div
+                            className={`h-full rounded-full ${pool.quota.exhausted || pool.quota.percent >= 90 ? "bg-red-500" : pool.quota.percent >= 70 ? "bg-amber-500" : "bg-primary"}`}
+                            style={{ width: `${pool.quota.exhausted ? 100 : pool.quota.percent}%` }}
+                          />
+                        </div>
+                      ) : null}
+                      <p className="text-[11px] text-text-muted">{pool.quota.summary}</p>
+                      {pool.quota.exhausted ? (
+                        <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-red-600 dark:text-red-400">
+                          limit reached
+                        </span>
+                      ) : null}
+                      <p className="text-[11px] text-text-muted/80">{pool.quota.note}</p>
                     </div>
                   ) : null}
                   <p className="text-[11px] text-text-muted mt-1">

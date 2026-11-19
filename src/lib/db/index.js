@@ -31,7 +31,7 @@ export {
 
 // Proxy pool daily usage (relay quota counter)
 export {
-  recordProxyPoolRequest, getProxyPoolUsage, getProxyPoolUsageMap,
+  recordProxyPoolRequest, recordProxyPoolBytes, getProxyPoolUsage, getProxyPoolUsageMap, getProxyPoolUsageMonthMap,
 } from "./repos/proxyPoolUsageRepo.js";
 
 // API keys

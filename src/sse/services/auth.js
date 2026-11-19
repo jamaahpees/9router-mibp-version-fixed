@@ -80,6 +80,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
           proxyPoolId: resolvedProxy.proxyPoolId || null,
           strictProxy: resolvedProxy.strictProxy === true,
+          // Relay kind ("vercel"/"cloudflare"/...) so the fetch layer knows
+          // which gateway meter applies (cloudflare counts requests, vercel bytes).
+          relayType: resolvedProxy.source || "",
           // Let chatCore's pool-scoped retry rotate across the same candidate
           // pool set (excluding the failed pool) instead of reusing it — this
           // is what makes per-IP limit retries work for no-auth providers.
@@ -293,6 +296,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         proxyPoolId: resolvedProxy.proxyPoolId || null,
         noFitPool: resolvedProxy.noFitPool === true,
         strictProxy: resolvedProxy.strictProxy === true,
+        // Relay kind ("vercel"/"cloudflare"/...) drives per-gateway metering.
+        relayType: resolvedProxy.source || "",
       },
       connectionId: connection.id,
       // Include current status for optimization check

@@ -10,7 +10,12 @@ import {
 } from "../config/runtimeConfig.js";
 import { dbg } from "./debugLog.js";
 import { ensureClaudeCliVersion, applyClaudeCliVersion } from "./claudeCliVersion.js";
-import { countRelayDispatch } from "./relayUsage.js";
+import { countRelayDispatch, countRelayBytes } from "./relayUsage.js";
+
+// Relay gateways that bill transfer rather than (only) requests. Cloudflare's
+// free tier is a daily request allowance, so its responses are never wrapped;
+// Vercel and Deno run out of monthly gigabytes first, so their bytes are metered.
+const RELAY_BYTE_METERED_TYPES = new Set(["vercel", "deno"]);
 
 const CLAUDE_UA_PROBE = /claude-cli\/\d/;
 function hasClaudeCliHeader(headers) {
@@ -426,6 +431,70 @@ async function serializeFormDataBody(options) {
   return { ...options, headers, body: Buffer.concat(chunks) };
 }
 
+/**
+ * Bytes the relay will carry outbound. Only bodies we can size without
+ * consuming a stream are counted; a streamed request body reports 0 and is
+ * simply under-counted, which is the safe direction for a remaining-meter.
+ */
+function requestBodyBytes(body) {
+  if (body == null) return 0;
+  try {
+    if (typeof body === "string") return Buffer.byteLength(body);
+    if (body instanceof ArrayBuffer) return body.byteLength;
+    if (ArrayBuffer.isView(body)) return body.byteLength;
+    if (typeof Blob !== "undefined" && body instanceof Blob) return body.size;
+    if (body instanceof URLSearchParams) return Buffer.byteLength(body.toString());
+  } catch {
+    // Never let bookkeeping break the request.
+  }
+  return 0;
+}
+
+const NO_BODY_STATUS = new Set([101, 204, 205, 304]);
+
+/**
+ * Count response bytes without changing what the caller sees.
+ *
+ * `content-length` is the transferred size and is used when the gateway sends
+ * it. Streaming gateways (SSE, chunked) omit it, so the body is passed through
+ * a counting TransformStream and re-wrapped in a Response: a fetch Response
+ * owns its internal body and cannot have `.body` swapped in place. The chunk
+ * sizes are decoded bytes, which over-counts compressed transfer slightly —
+ * conservative for a limit readout.
+ */
+function meterResponseBytes(res, onBytes) {
+  if (!res || NO_BODY_STATUS.has(res.status)) return res;
+  const declared = Number(res.headers?.get?.("content-length"));
+  if (Number.isFinite(declared) && declared > 0) {
+    onBytes(declared);
+    return res;
+  }
+  const body = res.body;
+  if (!body || typeof body.pipeThrough !== "function" || typeof TransformStream === "undefined" || typeof Response === "undefined") {
+    return res;
+  }
+  let total = 0;
+  const counter = new TransformStream({
+    transform(chunk, controller) {
+      if (typeof chunk?.byteLength === "number") total += chunk.byteLength;
+      else if (typeof chunk?.length === "number") total += chunk.length;
+      controller.enqueue(chunk);
+    },
+    flush() {
+      if (total > 0) onBytes(total);
+    },
+  });
+  try {
+    return new Response(body.pipeThrough(counter), {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+    });
+  } catch {
+    return res;
+  }
+}
+
 async function fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket = false) {
   try {
     // Protocol adapters may need Node's HTTP/1 transport on the direct path.
@@ -534,7 +603,8 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
 
   options = await serializeFormDataBody(options);
 
-  // Vercel relay: forward request via relay headers
+  // Relay pools (Vercel / Cloudflare / Deno / Netlify) forward by rewriting the
+  // target into headers instead of tunnelling through CONNECT.
   const vercelRelayUrl = normalizeString(proxyOptions?.vercelRelayUrl);
   if (vercelRelayUrl) {
     const parsed = new URL(targetUrl);
@@ -546,14 +616,20 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       "x-relay-target": `${parsed.protocol}//${parsed.host}`,
       "x-relay-path": `${parsed.pathname}${parsed.search}`,
     };
+    const relayPoolId = proxyOptions?.proxyPoolId || proxyOptions?.connectionProxyPoolId;
     // Every dispatch through the relay consumes one request of the pool's
-    // daily allowance, whatever the upstream answers, so count before awaiting.
-    countRelayDispatch(proxyOptions?.proxyPoolId || proxyOptions?.connectionProxyPoolId);
-    const res = await rawFetch(vercelRelayUrl, { ...options, headers: relayHeaders });
+    // allowance, whatever the upstream answers, so count before awaiting.
+    countRelayDispatch(relayPoolId);
+    // Only byte-metered gateways need transfer bookkeeping. Cloudflare answers
+    // to requests, so its response is returned untouched.
+    const byteMetered = RELAY_BYTE_METERED_TYPES.has(normalizeString(proxyOptions?.relayType));
+    if (byteMetered) countRelayBytes(relayPoolId, requestBodyBytes(options.body));
+    let res = await rawFetch(vercelRelayUrl, { ...options, headers: relayHeaders });
+    if (byteMetered) res = meterResponseBytes(res, (bytes) => countRelayBytes(relayPoolId, bytes));
     // Fork: a relay answering quota/auth codes means the pool route is dead for now.
     // Quarantine the pool so Smart rotation stops handing it out.
     if (res.status === 429 || res.status === 402 || res.status === 403) {
-      const poolId = proxyOptions?.proxyPoolId || proxyOptions?.connectionProxyPoolId;
+      const poolId = relayPoolId;
       if (poolId) {
         import("@/lib/localDb").then(({ updateProxyPool }) => {
           updateProxyPool(poolId, {

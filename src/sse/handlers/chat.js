@@ -494,6 +494,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           vercelRelayUrl: resolved.vercelRelayUrl || "",
           proxyPoolId: resolved.proxyPoolId || null,
           strictProxy: resolved.strictProxy === true,
+          relayType: resolved.source || "",
         };
       },
       // Per-provider user overrides (custom headers / connect timeout) from settings

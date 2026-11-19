@@ -399,6 +399,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     vercelRelayUrl: psd?.vercelRelayUrl || "",
     strictProxy: psd?.strictProxy === true || provider === "freebuff",
     proxyPoolId: psd?.proxyPoolId || psd?.connectionProxyPoolId || null,
+    // Which relay gateway this is ("vercel"/"cloudflare"/"deno"/"netlify"),
+    // so proxyFetch can meter the unit that gateway actually bills.
+    relayType: psd?.relayType || "",
   });
 
   const proxyScope = `${provider}::${model}`;

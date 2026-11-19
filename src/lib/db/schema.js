@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -76,14 +76,18 @@ export const TABLES = {
     ],
   },
   // One row per pool per UTC day: how many relay dispatches this instance
-  // sent. Cloudflare's own dashboard stays authoritative; this exists because
-  // reading Workers analytics needs a token with extra scope, while the answer
-  // to "how much is left today" only needs a counter we control.
+  // sent, and how many body bytes those dispatches moved. Cloudflare's own
+  // dashboard stays authoritative for its request allowance; this exists
+  // because reading Workers analytics needs a token with extra scope, while
+  // the answer to "how much is left today" only needs a counter we control.
+  // `bytes` is measured at the relay hop: request body as sent, response body
+  // as received (content-length when given, otherwise the streamed chunks).
   proxyPoolUsage: {
     columns: {
       poolId: "TEXT NOT NULL",
       day: "TEXT NOT NULL",
       requests: "INTEGER NOT NULL DEFAULT 0",
+      bytes: "INTEGER NOT NULL DEFAULT 0",
       lastUsedAt: "TEXT",
     },
     primaryKey: "PRIMARY KEY (poolId, day)",
