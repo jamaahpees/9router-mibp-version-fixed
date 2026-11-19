@@ -377,6 +377,54 @@ function isBodyReplaySafe(body) {
   return !(body && typeof body.getReader === "function" && body.locked);
 }
 
+/**
+ * Serialise a global FormData body into a multipart Buffer.
+ *
+ * The patched global fetch forwards to the undici copy bundled in this package,
+ * while `FormData` comes from Node's own copy. Those are two different classes,
+ * so the package's fetch cannot recognise the body: it coerces it with
+ * String(body) and sends `text/plain`, which multipart-only APIs (Cloudflare
+ * Worker upload, for one) reject with 415. Writing the multipart body ourselves
+ * keeps every FormData caller working no matter which copy created it.
+ */
+function escapeFormDataName(value) {
+  return String(value).replace(/"/g, "%22").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+}
+
+async function serializeFormDataBody(options) {
+  const body = options?.body;
+  if (!body || typeof body !== "object") return options;
+  if (typeof FormData === "undefined" || !(body instanceof FormData)) return options;
+
+  const boundary = "----9routerFormData" + Date.now().toString(16) + Math.random().toString(16).slice(2);
+  const chunks = [];
+  for (const [name, value] of body.entries()) {
+    let head = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + escapeFormDataName(name) + "\"";
+    let payload;
+    let type = "";
+    if (typeof value === "string") {
+      payload = Buffer.from(value, "utf8");
+    } else {
+      payload = Buffer.from(await value.arrayBuffer());
+      const filename = typeof value.name === "string" && value.name ? value.name : "blob";
+      head += "; filename=\"" + escapeFormDataName(filename) + "\"";
+      if (value.type) type = value.type;
+    }
+    head += "\r\n";
+    if (type) head += "Content-Type: " + type + "\r\n";
+    head += "\r\n";
+    chunks.push(Buffer.from(head, "utf8"), payload, Buffer.from("\r\n", "utf8"));
+  }
+  chunks.push(Buffer.from("--" + boundary + "--\r\n", "utf8"));
+
+  const headers = body && options.headers instanceof Headers
+    ? new Headers(options.headers)
+    : new Headers(options.headers || {});
+  headers.set("content-type", "multipart/form-data; boundary=" + boundary);
+
+  return { ...options, headers, body: Buffer.concat(chunks) };
+}
+
 async function fetchWithTlsFallback(url, options, proxyUrl, forceFreshSocket = false) {
   try {
     // Protocol adapters may need Node's HTTP/1 transport on the direct path.
@@ -482,6 +530,8 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     options = { ...options, headers: applyClaudeCliVersion(options.headers) };
   }
   const targetUrl = typeof url === "string" ? url : url.toString();
+
+  options = await serializeFormDataBody(options);
 
   // Vercel relay: forward request via relay headers
   const vercelRelayUrl = normalizeString(proxyOptions?.vercelRelayUrl);

@@ -63,6 +63,11 @@ export async function POST(request) {
     
     // Cloudflare requires multipart/form-data for worker script upload
     const formData = new FormData();
+    // application/javascript+module is the type Cloudflare documents for a
+    // module-format Worker part; metadata.main_module names this file as the
+    // entry point. The upload failure was never this type: the patched global
+    // fetch used to coerce the FormData body to text/plain, which Cloudflare
+    // rejects with "Content-Type must be one of ...".
     formData.append("index.js", new Blob([RELAY_WORKER_CODE], { type: "application/javascript+module" }), "index.js");
     formData.append("metadata", new Blob([JSON.stringify({
       main_module: "index.js",
