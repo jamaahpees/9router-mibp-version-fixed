@@ -29,6 +29,11 @@ export {
   createProxyPool, updateProxyPool, deleteProxyPool,
 } from "./repos/proxyPoolsRepo.js";
 
+// Proxy pool daily usage (relay quota counter)
+export {
+  recordProxyPoolRequest, getProxyPoolUsage, getProxyPoolUsageMap,
+} from "./repos/proxyPoolUsageRepo.js";
+
 // API keys
 export {
   getApiKeys, getApiKeyById, getApiKeyByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey,

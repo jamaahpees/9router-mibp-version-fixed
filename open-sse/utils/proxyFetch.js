@@ -10,6 +10,7 @@ import {
 } from "../config/runtimeConfig.js";
 import { dbg } from "./debugLog.js";
 import { ensureClaudeCliVersion, applyClaudeCliVersion } from "./claudeCliVersion.js";
+import { countRelayDispatch } from "./relayUsage.js";
 
 const CLAUDE_UA_PROBE = /claude-cli\/\d/;
 function hasClaudeCliHeader(headers) {
@@ -545,6 +546,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       "x-relay-target": `${parsed.protocol}//${parsed.host}`,
       "x-relay-path": `${parsed.pathname}${parsed.search}`,
     };
+    // Every dispatch through the relay consumes one request of the pool's
+    // daily allowance, whatever the upstream answers, so count before awaiting.
+    countRelayDispatch(proxyOptions?.proxyPoolId || proxyOptions?.connectionProxyPoolId);
     const res = await rawFetch(vercelRelayUrl, { ...options, headers: relayHeaders });
     // Fork: a relay answering quota/auth codes means the pool route is dead for now.
     // Quarantine the pool so Smart rotation stops handing it out.

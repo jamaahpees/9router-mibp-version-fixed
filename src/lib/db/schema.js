@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -74,6 +74,20 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_pp_active ON proxyPools(isActive)",
       "CREATE INDEX IF NOT EXISTS idx_pp_status ON proxyPools(testStatus)",
     ],
+  },
+  // One row per pool per UTC day: how many relay dispatches this instance
+  // sent. Cloudflare's own dashboard stays authoritative; this exists because
+  // reading Workers analytics needs a token with extra scope, while the answer
+  // to "how much is left today" only needs a counter we control.
+  proxyPoolUsage: {
+    columns: {
+      poolId: "TEXT NOT NULL",
+      day: "TEXT NOT NULL",
+      requests: "INTEGER NOT NULL DEFAULT 0",
+      lastUsedAt: "TEXT",
+    },
+    primaryKey: "PRIMARY KEY (poolId, day)",
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_ppu_day ON proxyPoolUsage(day)"],
   },
   apiKeys: {
     columns: {

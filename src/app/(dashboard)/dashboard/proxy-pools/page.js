@@ -869,6 +869,22 @@ export default function ProxyPoolsPage() {
                   {pool.noProxy ? (
                     <p className="text-xs text-text-muted truncate">No proxy: {pool.noProxy}</p>
                   ) : null}
+                  {pool.quota && pool.quota.limit ? (
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <div
+                        className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-black/10 dark:bg-white/10"
+                        title={`${pool.quota.percent}% of today's allowance used`}
+                      >
+                        <div
+                          className={`h-full rounded-full ${pool.quota.percent >= 90 ? "bg-red-500" : pool.quota.percent >= 70 ? "bg-amber-500" : "bg-primary"}`}
+                          style={{ width: `${pool.quota.percent}%` }}
+                        />
+                      </div>
+                      <p className="text-[11px] text-text-muted">
+                        {`Quota today: ${pool.quota.used.toLocaleString()} / ${pool.quota.limit.toLocaleString()} · ${pool.quota.remaining.toLocaleString()} left (UTC ${pool.quota.day})`}
+                      </p>
+                    </div>
+                  ) : null}
                   <p className="text-[11px] text-text-muted mt-1">
                     Last tested: {formatDateTime(pool.lastTestedAt)}
                     {pool.lastLatencyMs != null ? ` · ${pool.lastLatencyMs}ms` : ""}

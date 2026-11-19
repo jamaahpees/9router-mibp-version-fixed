@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { createProxyPool, getProviderConnections, getProxyPools } from "@/models";
 import { getPoolGeo } from "open-sse/services/poolGeo.js";
 import { buildProxyPoolUsageMap } from "@/shared/utils/proxyPoolBinding.js";
+import { getProxyPoolUsageMap } from "@/lib/db/repos/proxyPoolUsageRepo.js";
+import { buildProxyPoolQuota, utcDayKey } from "@/shared/utils/proxyPoolQuota.js";
 
 function toBoolean(value) {
   if (value === "true") return true;
@@ -51,11 +53,17 @@ export async function GET(request) {
     const connections = await getProviderConnections();
     const usageMap = buildProxyPoolUsageMap(connections);
 
+    // Local tally of relay dispatches for today (UTC), so the card can show how
+    // much of the daily allowance is left without storing provider tokens.
+    const dayKey = utcDayKey();
+    const requestUsage = await getProxyPoolUsageMap(dayKey);
+
     const enrichedProxyPools = proxyPools.map((pool) => ({
       ...pool,
       boundConnectionCount: usageMap.get(pool.id) || 0,
       // Egress geo from the background probe cache (null until first probe).
       egress: getPoolGeo(pool.id) || null,
+      quota: buildProxyPoolQuota(pool, requestUsage.get(pool.id), dayKey),
     }));
 
     return NextResponse.json({ proxyPools: enrichedProxyPools });
