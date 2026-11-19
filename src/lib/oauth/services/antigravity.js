@@ -1,7 +1,7 @@
-import crypto from "crypto";
 import open from "open";
 import { ANTIGRAVITY_CONFIG, getOAuthClientMetadata } from "../constants/oauth.js";
 import { getServerCredentials } from "../config/index.js";
+import { generatePKCE } from "../utils/pkce.js";
 import { startLocalServer } from "../utils/server.js";
 import { spinner as createSpinner } from "../utils/ui.js";
 
@@ -17,7 +17,7 @@ export class AntigravityService {
   /**
    * Build Antigravity authorization URL
    */
-  buildAuthUrl(redirectUri, state) {
+  buildAuthUrl(redirectUri, state, codeChallenge) {
     const params = new URLSearchParams({
       client_id: this.config.clientId,
       response_type: "code",
@@ -28,26 +28,35 @@ export class AntigravityService {
       prompt: "consent",
     });
 
+    if (codeChallenge) {
+      params.set("code_challenge", codeChallenge);
+      params.set("code_challenge_method", "S256");
+    }
+
     return `${this.config.authorizeUrl}?${params.toString()}`;
   }
 
   /**
    * Exchange authorization code for tokens
    */
-  async exchangeCode(code, redirectUri) {
+  async exchangeCode(code, redirectUri, codeVerifier) {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: this.config.clientId,
+      client_secret: this.config.clientSecret,
+      code: code,
+      redirect_uri: redirectUri,
+    });
+
+    if (codeVerifier) body.set("code_verifier", codeVerifier);
+
     const response = await fetch(this.config.tokenUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         Accept: "application/json",
       },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        client_id: this.config.clientId,
-        client_secret: this.config.clientSecret,
-        code: code,
-        redirect_uri: redirectUri,
-      }),
+      body,
     });
 
     if (!response.ok) {
@@ -239,11 +248,11 @@ export class AntigravityService {
       const redirectUri = `http://localhost:${port}/callback`;
       spinner.succeed(`Local server started on port ${port}`);
 
-      // Generate state
-      const state = crypto.randomBytes(32).toString("base64url");
+      // Generate state + PKCE pair (mirrors the Antigravity CLI login)
+      const { codeVerifier, codeChallenge, state } = generatePKCE();
 
       // Build authorization URL
-      const authUrl = this.buildAuthUrl(redirectUri, state);
+      const authUrl = this.buildAuthUrl(redirectUri, state, codeChallenge);
 
       console.log("\nOpening browser for Antigravity authentication...");
       console.log(`If browser doesn't open, visit:\n${authUrl}\n`);
@@ -281,7 +290,7 @@ export class AntigravityService {
       spinner.start("Exchanging code for tokens...");
 
       // Exchange code for tokens
-      const tokens = await this.exchangeCode(callbackParams.code, redirectUri);
+      const tokens = await this.exchangeCode(callbackParams.code, redirectUri, codeVerifier);
 
       spinner.text = "Fetching user info...";
 

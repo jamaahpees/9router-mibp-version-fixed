@@ -24,16 +24,16 @@ export default {
     headers: {
       "User-Agent": ANTIGRAVITY_IDE_USER_AGENT,
     },
+    // No in-place retries: a 429 is a quota verdict (worth minutes, not
+    // seconds) and 5xx is transient. Retrying here multiplies upstream hits per
+    // client request - with account fallback plus combo seats the same request
+    // could otherwise reach the same account four times. Fail over instead.
     retry: {
-      "429": {
-        attempts: 3,
-      },
-      "500": {
-        attempts: 3,
-      },
-      "503": {
-        attempts: 3,
-      },
+      "429": { attempts: 0 },
+      "500": { attempts: 0 },
+      "502": { attempts: 0 },
+      "503": { attempts: 0 },
+      "504": { attempts: 0 },
     },
     usage: {
       quotaApiUrl: `${ANTIGRAVITY_IDE_BASE_URL}/v1internal:fetchAvailableModels`,
@@ -76,6 +76,8 @@ export default {
       "https://www.googleapis.com/auth/userinfo.profile",
       "https://www.googleapis.com/auth/cclog",
       "https://www.googleapis.com/auth/experimentsandconfigs",
+      "https://www.googleapis.com/auth/aicode",
+      "openid",
     ],
     apiEndpoint: "https://daily-cloudcode-pa.googleapis.com",
     apiVersion: "v1internal",

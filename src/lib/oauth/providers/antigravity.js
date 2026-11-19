@@ -2,8 +2,8 @@ import { ANTIGRAVITY_CONFIG, getOAuthClientMetadata } from "../constants/oauth.j
 
 const antigravity = {
   config: ANTIGRAVITY_CONFIG,
-  flowType: "authorization_code",
-  buildAuthUrl: (config, redirectUri, state) => {
+  flowType: "authorization_code_pkce",
+  buildAuthUrl: (config, redirectUri, state, codeChallenge) => {
     const params = new URLSearchParams({
       client_id: config.clientId,
       response_type: "code",
@@ -13,22 +13,29 @@ const antigravity = {
       access_type: "offline",
       prompt: "consent",
     });
+    if (codeChallenge) {
+      params.set("code_challenge", codeChallenge);
+      params.set("code_challenge_method", config.codeChallengeMethod || "S256");
+    }
     return `${config.authorizeUrl}?${params.toString()}`;
   },
-  exchangeToken: async (config, code, redirectUri) => {
+  exchangeToken: async (config, code, redirectUri, codeVerifier) => {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      code: code,
+      redirect_uri: redirectUri,
+    });
+    if (codeVerifier) body.set("code_verifier", codeVerifier);
+
     const response = await fetch(config.tokenUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         Accept: "application/json",
       },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
-        code: code,
-        redirect_uri: redirectUri,
-      }),
+      body,
     });
 
     if (!response.ok) {

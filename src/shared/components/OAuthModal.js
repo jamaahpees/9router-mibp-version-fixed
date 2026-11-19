@@ -367,6 +367,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         redirectUri = "http://localhost:1455/auth/callback";
       } else if (provider === "xai") {
         redirectUri = "http://127.0.0.1:56121/callback";
+      } else if (provider === "antigravity") {
+        // Same callback the Antigravity CLI uses: Google's own page renders the
+        // code, so the browser never dead-ends on a localhost port that has no
+        // listener (which is the case when the dashboard runs behind a tunnel).
+        redirectUri = "https://antigravity.google/oauth-callback";
       } else {
         redirectUri = `http://localhost:${appPort}/callback`;
       }
@@ -713,6 +718,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       if (provider === "kimchi" && input && !input.includes("://") && !input.includes("?")) {
         await exchangeTokens(input, null);
+        return;
+      }
+
+      // Antigravity uses the CLI-style callback (antigravity.google shows a bare
+      // code), so a paste with no scheme or query string is the code itself.
+      if (provider === "antigravity" && input && !input.includes("://") && !input.includes("?")) {
+        await exchangeTokens(input.trim(), null);
         return;
       }
 
