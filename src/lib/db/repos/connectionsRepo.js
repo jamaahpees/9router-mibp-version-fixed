@@ -14,7 +14,12 @@ const OPTIONAL_FIELDS = [
 const MODEL_LOCK_PREFIX = "modelLock_";
 
 function resetHealthStateOnActivation(existing, patch) {
-  if (patch?.testStatus !== "active") return patch;
+  // Switching a connection back on is the user saying "try this account again",
+  // so it must not inherit the locks, backoff and quota verdicts earned before
+  // it was switched off. Otherwise re-enabling one leaves it silently unusable
+  // until the old timer runs out, which looks like a mysterious waiting time.
+  const turningOn = patch?.isActive === true && existing?.isActive !== true;
+  if (patch?.testStatus !== "active" && !turningOn) return patch;
 
   const normalized = {
     ...patch,

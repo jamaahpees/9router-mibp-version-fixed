@@ -194,6 +194,26 @@ export async function PUT(request, { params }) {
 
     const updated = await updateProviderConnection(id, updateData);
 
+    // A switched-on account is a request to use it right now. Drop the in-memory
+    // verdicts gathered while it was off (quota reset cache, combo grade
+    // cooldowns) so the next request probes it instead of waiting out a timer.
+    if (updateData.isActive === true) {
+      try {
+        const { resetComboRotation } = await import("open-sse/services/combo.js");
+        resetComboRotation();
+      } catch (e) {
+        console.log("combo state reset skipped:", e?.message);
+      }
+      if (existing.provider === "antigravity") {
+        try {
+          const { clearAntigravityQuotaCache } = await import("@/sse/services/antigravityQuota");
+          clearAntigravityQuotaCache(id);
+        } catch (e) {
+          console.log("quota cache reset skipped:", e?.message);
+        }
+      }
+    }
+
     return NextResponse.json({ connection: toProviderConnectionResponse(updated) });
   } catch (error) {
     console.log("Error updating connection:", error);

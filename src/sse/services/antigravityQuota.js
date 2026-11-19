@@ -232,6 +232,17 @@ export function getAntigravityQuotaCache() {
 }
 
 /**
+ * Drop every cached verdict for one connection.
+ * A re-enabled account has to be probed again instead of inheriting the quota
+ * reset (possibly days away) that was recorded before it was switched off.
+ */
+export function clearAntigravityQuotaCache(connectionId) {
+  quotaCache.delete(connectionId);
+  lastRefreshAt.delete(connectionId);
+  inflightRefresh.delete(connectionId);
+}
+
+/**
  * Refresh quota for a single antigravity connection from upstream API.
  * Updates in-memory cache only. Cache expiry is the upstream model resetAt.
  * @returns {object|null} quotas map or null on failure

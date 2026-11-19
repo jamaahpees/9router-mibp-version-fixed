@@ -322,6 +322,28 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
 
+  // An antigravity 403 VALIDATION_REQUIRED is Google's verdict on the account
+  // itself (identity verification pending), so a retry cannot change it. Every
+  // attempt spends another request on an account Google already flagged, which
+  // is exactly the pattern that gets an account blocked. Park it until the owner
+  // verifies and logs in again.
+  if (
+    resolveProviderId(provider) === "antigravity" &&
+    Number(status) === 403 &&
+    /VALIDATION_REQUIRED/.test(String(errorText))
+  ) {
+    await updateProviderConnection(connectionId, {
+      isActive: false,
+      testStatus: "error",
+      errorCode: 403,
+      lastError: "VALIDATION_REQUIRED - verifikasi akun Google belum selesai",
+      lastErrorAt: new Date().toISOString()
+    });
+    const who = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
+    log.warn("AUTH", `${who} dinonaktifkan: verifikasi akun Google belum selesai [403]`);
+    return { shouldFallback: true, cooldownMs: 0 };
+  }
+
   // GitHub premium-request exhaustion is account-wide until the next UTC month.
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
